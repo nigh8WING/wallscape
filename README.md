@@ -1,19 +1,19 @@
-# Live Wallpaper for Zorin OS (17 & 18) / GNOME
+# Live Wallpaper for Zorin OS (18 & 17) / GNOME
 
-A lightweight, hardware-accelerated live video desktop wallpaper manager written in pure **C11**, designed specifically for **Zorin OS 17 & 18** (Ubuntu 22.04 / 24.04 LTS, GNOME/Mutter, x86_64).
+A lightweight, hardware-accelerated live video desktop wallpaper manager written in pure **C11**, designed specifically for **Zorin OS 18 & 17** (Ubuntu 24.04 / 22.04 LTS, GNOME/Mutter, x86_64).
 
 ---
 
 ## Features
 
-- **100% Free & Open Source**: Built using only standard Ubuntu packages (`FFmpeg`, `SDL2`, `GTK3`, `Xlib`).
-- **Seamless Infinite Looping**: Uses container seeking with zero audio overhead and no frame-stutter.
-- **Behind Desktop Icons**: Uses the X11 `_NET_WM_WINDOW_TYPE_DESKTOP` window manager hint, placing video beneath desktop icons and desktop widgets (identical to *xwinwrap* and *Komorebi*).
-- **Dual Session Support (X11 & Wayland)**: Automatically forces XWayland mode when launched under Wayland (the default in Zorin OS 18), allowing desktop hints to function seamlessly under GNOME/Mutter.
-- **Aspect-Ratio Cover Scaling**: Fits any aspect ratio video (16:9, 16:10, 21:9, 4:3) to the screen, cropping excess automatically without distortion.
-- **Multi-threaded Architecture**: Video decoding and scaling runs on a dedicated background thread; rendering is timer-driven (~60 FPS) on the main thread via GTK.
+- **100% Free & Open Source**: Built using standard system libraries (`FFmpeg`, `SDL2`, `GTK3`, `Xlib`).
+- **Behind Desktop Icons**: Places video beneath desktop icons and widgets using window manager desktop-layer hinting (`_NET_WM_WINDOW_TYPE_DESKTOP`).
+- **Dual Session Support (Wayland & X11)**: Automatically forces XWayland mode when launched under Wayland (default in Zorin OS 18), allowing desktop hints to function seamlessly under GNOME/Mutter.
+- **Seamless Infinite Looping**: High-efficiency in-memory container seeking with zero audio overhead.
+- **Aspect-Ratio Cover Scaling**: Fits any video aspect ratio (16:9, 16:10, 21:9, 4:3) to the screen, cropping excess automatically without distortion.
+- **Multi-threaded Architecture**: Video decoding and scaling runs on a dedicated background thread; rendering is timer-driven (~60 FPS) on the main GTK loop.
 - **GTK3 Control Panel**: Interactive GUI with a file chooser dialog, pause/resume toggle, stop button, and clean exit.
-- **Persistent State & Autostart**: Saves the last-used video in `~/.config/live-wallpaper/config.txt` and supports login autostart via standard `.desktop` entries.
+- **Persistent State & Autostart**: Automatically remembers the last-used video in `~/.config/live-wallpaper/config.txt` and supports login autostart.
 
 ---
 
@@ -26,9 +26,28 @@ A lightweight, hardware-accelerated live video desktop wallpaper manager written
 
 ---
 
-## Prerequisites (Build Dependencies)
+## Quick Start (One-Liner Install & Run)
 
-All dependencies are completely free and available in the default Ubuntu / Zorin OS repositories:
+```bash
+# 1. Install dependencies
+sudo apt update && sudo apt install -y build-essential cmake pkg-config \
+  libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
+  libsdl2-dev libgtk-3-dev libx11-dev
+
+# 2. Clone and build
+git clone https://github.com/nigh8WING/zorin18-livewallpaper.git
+cd zorin18-livewallpaper
+cmake -B build && cmake --build build
+
+# 3. Launch
+./build/live-wallpaper
+```
+
+---
+
+## Prerequisites (Dependencies)
+
+All required packages are available directly in Ubuntu / Zorin OS repositories:
 
 ```bash
 sudo apt update
@@ -41,13 +60,14 @@ sudo apt install build-essential cmake pkg-config \
 
 ## Build & Install
 
-### 1. Build from Source
+### 1. Build Locally
 
 ```bash
-cd "/home/user/Coding/Live Wallpaper Software"
 cmake -B build
 cmake --build build
 ```
+
+The compiled binary will be located at `./build/live-wallpaper`.
 
 ### 2. System-wide Installation (Optional)
 
@@ -55,30 +75,43 @@ cmake --build build
 sudo cmake --install build
 ```
 
-This installs the `live-wallpaper` binary to `/usr/local/bin` and the desktop file to `/usr/local/share/applications`.
+This installs:
+- Executable to `/usr/local/bin/live-wallpaper`
+- Desktop entry to `/usr/local/share/applications/live-wallpaper.desktop`
+
+### 3. Uninstallation
+
+If you ever wish to remove the system-wide installation:
+
+```bash
+sudo rm -f /usr/local/bin/live-wallpaper
+sudo rm -f /usr/local/share/applications/live-wallpaper.desktop
+```
 
 ---
 
-## Running
+## Usage
 
-### Standard Mode (Opens GTK Control Panel)
+### Interactive Mode (Control Panel)
 ```bash
+live-wallpaper
+# Or if running locally from build directory:
 ./build/live-wallpaper
 ```
 
 ### Direct Video Path
 ```bash
-./build/live-wallpaper /path/to/my_wallpaper.mp4
+live-wallpaper /path/to/my_wallpaper.mp4
 ```
 
-### Background / Headless Mode (No GUI Window)
+### Headless / Background Mode (No Control Panel Window)
 ```bash
-./build/live-wallpaper --no-gui
+live-wallpaper --no-gui
 ```
 
 ---
 
-## Setting Up Autostart on Login
+## Autostart on Login
 
 To make your live wallpaper launch automatically whenever you log into Zorin OS:
 
@@ -91,7 +124,7 @@ On login, `live-wallpaper` will read the last played video from `~/.config/live-
 
 ---
 
-## Architecture
+## Architecture Overview
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -111,11 +144,11 @@ On login, `live-wallpaper` will read the last played video from `~/.config/live-
 │  │  - SDL_UpdateYUVTexture() + Aspect Cover Cropping  │  │
 │  └────────────────────────▲───────────────────────────┘  │
 └───────────────────────────┼──────────────────────────────┘
-                            │ pop frame
+                            │ pop frame (non-blocking)
                  ┌──────────┴──────────┐
                  │ FrameQueue (Ring 3) │
                  └──────────▲──────────┘
-                            │ push frame
+                            │ push frame (blocking)
 ┌───────────────────────────┼──────────────────────────────┐
 │  ┌────────────────────────┴───────────────────────────┐  │
 │  │         FFmpeg Decoder Thread (decoder.c)          │  │
@@ -127,3 +160,9 @@ On login, `live-wallpaper` will read the last played video from `~/.config/live-
 │               Background Decoder Thread                  │
 └──────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## License
+
+MIT License — Feel free to use, modify, and distribute!
