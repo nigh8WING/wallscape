@@ -1,0 +1,80 @@
+Build a live wallpaper application in C (C11) for Zorin OS 17 (Ubuntu 24.04, GNOME/Mutter, x86_64).
+
+Purpose:
+- User selects a local video file (.mkv, .mp4) via a GUI file picker
+- The video plays as the desktop wallpaper (behind desktop icons, fullscreen, looping infinitely)
+- No audio output (silent playback)
+- A small control panel/tray icon allows: pick new video, pause/resume, quit
+
+Architecture:
+
+1. WALLPAPER WINDOW (the video surface):
+   - Borderless, fullscreen SDL2 window covering the entire screen
+   - After window creation, set the X11 property _NET_WM_WINDOW_TYPE to _NET_WM_WINDOW_TYPE_DESKTOP
+     so Mutter places it behind desktop icons
+   - Also set _NET_WM_STATE_SKIP_TASKBAR and _NET_WM_STATE_SKIP_PAGER
+   - Use Xlib (X11) to set these properties on the SDL window's X11 surface
+     (retrieve the X11 window ID via SDL_GetWindowWMInfo)
+   - Render decoded video frames via SDL_Renderer (or SDL_Texture streaming)
+   - Video loops infinitely (seek to start on end)
+
+2. GUI / CONTROL PANEL:
+   - GTK3 window (small, ~400x300, not fullscreen)
+   - Contains:
+     - "Choose Video" button → opens GtkFileChooserDialog (filter: *.mkv, *.mp4, *.webm)
+     - "Pause / Resume" button
+     - "Stop" button (hides wallpaper window)
+     - Label showing current file path
+   - This window stays on the normal layer (above the wallpaper)
+
+3. VIDEO DECODING (FFmpeg 6.1):
+   - libavformat: open file, demux
+   - libavcodec: decode video stream (first video stream in container)
+   - libswscale: convert to RGB24 or RGBA (for SDL texture upload)
+   - Skip audio entirely (do not open audio decoder)
+   - Infinite loop: when end of file is reached, seek to timestamp 0 and continue
+
+4. THREADING:
+   - Thread 1 (decode): reads packets, decodes frames, pushes to a bounded frame queue (max 3 frames)
+   - Thread 2 (render): SDL2 main loop, pulls from frame queue, uploads to SDL_Texture, renders
+   - GTK main loop runs on the main thread (or a dedicated thread)
+   - Graceful shutdown: signal → stop decode thread → destroy SDL window → quit GTK
+
+5. STARTUP / AUTOSTART:
+   - Install a .desktop file at ~/.config/autostart/live-wallpaper.desktop so it launches on login
+   - On first run, show the GTK control panel; user picks a video; wallpaper starts
+   - On subsequent runs (autostart), load the last-used video from a config file
+     (~/.config/live-wallpaper/config.json — just the file path)
+
+Tech stack:
+- C11, CMake build system
+- FFmpeg 6.1 (libavformat, libavcodec, libavutil, libswscale)
+- SDL2 (window + rendering)
+- GTK3 (control panel GUI)
+- Xlib (for setting _NET_WM_WINDOW_TYPE on the SDL window)
+
+Build & install:
+  sudo apt install build-essential cmake \
+    libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
+    libsdl2-dev libgtk-3-dev libx11-dev
+  cmake -B build && cmake --build build && sudo cmake --install build
+
+File layout:
+  main.c            — entry point, signal handling, config load/save
+  wallpaper.c       — SDL2 window creation, X11 desktop-type hints, render loop
+  decoder.c         — FFmpeg open/decode/loop logic
+  gui.c             — GTK3 control panel (file chooser, buttons)
+  config.c          — read/write ~/.config/live-wallpaper/config.json
+  common.h          — shared types, frame queue struct
+
+Constraints:
+- No audio decoding or output
+- Target: < 100 ms from file selection to first frame displayed
+- Smooth 1080p@60 and 4K@30 playback on mid-range hardware
+- If the video resolution doesn't match the screen, scale to fit (cover, crop)
+- Clean exit: remove wallpaper window, restore desktop
+- Comment the X11 window-type trick and the loop logic clearly
+
+Reference: the X11 _NET_WM_WINDOW_TYPE_DESKTOP approach is how xwinwrap and
+Komorebi place video behind icons on GNOME. Model the decode loop after ffplay
+but strip all audio and seek logic, replace with infinite loop.   
