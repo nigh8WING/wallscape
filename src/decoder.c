@@ -277,7 +277,10 @@ static void *decoder_thread_func(void *arg)
                 /* Step 1: Flush decoder — send NULL packet to drain buffered frames */
                 avcodec_send_packet(d.codec_ctx, NULL);
                 while (avcodec_receive_frame(d.codec_ctx, d.frame_raw) == 0) {
-                    if (atomic_load(&state->quit)) break;
+                    if (atomic_load(&state->quit)) {
+                        av_frame_unref(d.frame_raw);
+                        break;
+                    }
 
                     sws_scale(d.sws_ctx,
                               (const uint8_t *const *)d.frame_raw->data,
@@ -285,11 +288,13 @@ static void *decoder_thread_func(void *arg)
                               0, d.codec_ctx->height,
                               d.frame_yuv->data, d.frame_yuv->linesize);
 
-                    if (!frame_queue_push(&state->queue,
+                    bool pushed = frame_queue_push(&state->queue,
                                           d.frame_yuv->data[0], d.frame_yuv->linesize[0],
                                           d.frame_yuv->data[1], d.frame_yuv->data[2],
                                           d.frame_yuv->linesize[1],
-                                          d.codec_ctx->width, d.codec_ctx->height)) {
+                                          d.codec_ctx->width, d.codec_ctx->height);
+                    av_frame_unref(d.frame_raw);
+                    if (!pushed) {
                         break;  /* queue aborted */
                     }
                 }

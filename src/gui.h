@@ -1,13 +1,5 @@
 /*
- * gui.h — GTK3 control panel & wallpaper selector interface for live-wallpaper.
- *
- * Provides a dedicated gallery & control panel window:
- *   - Displays all video wallpapers found in the current folder in a selectable list
- *   - Highlights the currently active wallpaper
- *   - Allows selecting/switching wallpapers instantly with a single click
- *   - Choose Video & Choose Folder buttons
- *   - Playback controls: Pause / Resume, Stop, Quit
- *   - Drives SDL2 rendering (~60fps) on the main GTK loop
+ * gui.h — Dual-Tab Sidebar Studio Interface for Live and Static Wallpapers.
  */
 
 #ifndef LIVE_WALLPAPER_GUI_H
@@ -16,42 +8,36 @@
 #include "common.h"
 #include "wallpaper.h"
 
-/* Opaque GUI context */
 typedef struct GuiCtx GuiCtx;
 
 /*
- * Create the GTK3 control panel and wallpaper selector window.
- * Returns NULL on failure.
+ * Create the dual-mode GTK3 studio window with sidebar navigation.
  */
 GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper);
 
 /*
- * Destroy the GUI and free resources.
+ * Destroy GUI resources cleanly.
  */
 void gui_destroy(GuiCtx *ctx);
 
 /*
- * Show the control panel window (brings to front).
+ * Show the studio window.
  */
 void gui_show(GuiCtx *ctx);
 
 /*
- * Start the render timer (~60fps) that drives SDL rendering.
+ * Start/stop render timer (~60fps).
  */
 void gui_start_render_timer(GuiCtx *ctx);
-
-/*
- * Stop the render timer.
- */
 void gui_stop_render_timer(GuiCtx *ctx);
 
 /*
- * Update the status label text.
+ * Update status label.
  */
 void gui_set_status(GuiCtx *ctx, const char *text);
 
 /*
- * Load a video file and automatically scan its parent folder to populate the wallpaper list.
+ * Autoload initial video and scan folder on startup.
  */
 void gui_load_video_and_scan_folder(GuiCtx *ctx, const char *filepath);
 

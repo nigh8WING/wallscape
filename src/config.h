@@ -1,11 +1,13 @@
 /*
  * config.h — Configuration file load/save for live-wallpaper.
  *
- * Stores a single setting (last-used video path) in a plain text file at:
+ * Stores settings in a plain text key=value file at:
  *   ~/.config/live-wallpaper/config.txt
  *
- * Format:
- *   video_path=/path/to/video.mp4
+ * Supported keys:
+ *   video_path=          Last active live wallpaper video file
+ *   live_folder=         Last loaded live wallpaper folder
+ *   static_folder=       Last loaded static image folder
  */
 
 #ifndef LIVE_WALLPAPER_CONFIG_H
@@ -14,19 +16,22 @@
 #include <stdbool.h>
 #include "common.h"
 
-/*
- * Load the saved video path from the config file.
- * If the file exists and contains a valid path, copies it into path_out
- * (up to LW_MAX_PATH bytes) and returns true.
- * Returns false if the config file doesn't exist or is empty.
- */
+/* Load the saved video path. Returns true if found. */
 bool config_load(char *path_out, int max_len);
 
-/*
- * Save the video path to the config file.
- * Creates ~/.config/live-wallpaper/ if it doesn't exist.
- * Returns true on success.
- */
+/* Save the video path to the config file. */
 bool config_save(const char *video_path);
+
+/* Load the last-used live video folder. Returns true if found. */
+bool config_load_live_folder(char *folder_out, int max_len);
+
+/* Save the last-used live video folder. */
+bool config_save_live_folder(const char *folder);
+
+/* Load the last-used static image folder. Returns true if found. */
+bool config_load_static_folder(char *folder_out, int max_len);
+
+/* Save the last-used static image folder. */
+bool config_save_static_folder(const char *folder);
 
 #endif /* LIVE_WALLPAPER_CONFIG_H */

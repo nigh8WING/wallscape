@@ -1,196 +1,245 @@
 /*
- * gui.c — Modern Grid Gallery & Control Panel for Live Wallpaper.
+ * gui.c — Modern Dual-Tab Wallpaper Studio (Live & Static Wallpapers).
  *
  * Features:
- *   - Visual Grid Gallery using GtkFlowBox with video thumbnails
- *   - Custom GTK3 CSS styling (rounded cards, hover glow, active borders)
- *   - Active wallpaper indicator with green checkmark badge
- *   - Confirmation dialog before turning ON or OFF a wallpaper
- *   - Folder selector ("📁 Select Folder...")
- *   - Nice symbolic icons on buttons
- *   - Render timer driving ~60fps SDL2 output safely on the main thread
+ *   - Left-hand sidebar navigation tabs:
+ *       1. 🎬 Live Wallpapers (videos: .mp4, .mkv, .webm, .avi, .mov)
+ *       2. 🖼️ Static Wallpapers (images: .jpg, .png, .webp, .svg, .bmp, .gif)
+ *   - Compact 130x75 thumbnail grid (GtkFlowBox) with fast thumbnail generation
+ *   - Active wallpaper indicator with green checkmark badge (✔ Active)
+ *   - Confirmation modals before turning ON or turning OFF wallpapers
+ *   - Native GNOME GSettings integration for static backgrounds
+ *   - Zero memory leaks: strict g_free, g_object_unref, and cleanup callbacks
+ *   - Custom polished GTK3 CSS styling and SVG branding
  */
 
 #include "gui.h"
 #include "decoder.h"
 #include "config.h"
 #include "thumbnail.h"
+#include "static_wallpaper.h"
 
 #include <gtk/gtk.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
-#define MAX_LOADED_WALLPAPERS 256
-#define THUMB_WIDTH  180
-#define THUMB_HEIGHT 110
+#define MAX_WALLPAPERS 256
 
-/* CSS Stylesheet for polished modern UI */
-static const char *CUSTOM_CSS =
-"window.main-window {"
+/* Custom CSS Stylesheet */
+static const char *STUDIO_CSS =
+"window.studio-window {"
 "    background-color: @theme_bg_color;"
 "}"
-".top-header {"
-"    padding: 10px 14px;"
-"    background-color: alpha(@theme_bg_color, 0.95);"
-"    border-bottom: 1px solid alpha(@theme_fg_color, 0.12);"
+".sidebar {"
+"    background-color: alpha(@theme_base_color, 0.4);"
+"    border-right: 1px solid alpha(@theme_fg_color, 0.12);"
+"    padding: 12px 8px;"
 "}"
-".folder-banner {"
-"    font-size: 11px;"
-"    opacity: 0.85;"
+".sidebar-brand {"
+"    padding: 6px 8px 16px 8px;"
+"    border-bottom: 1px solid alpha(@theme_fg_color, 0.10);"
+"    margin-bottom: 10px;"
+"}"
+".sidebar-title {"
+"    font-weight: 700;"
+"    font-size: 13px;"
+"}"
+".sidebar-subtitle {"
+"    font-size: 10px;"
+"    opacity: 0.65;"
+"}"
+".nav-btn {"
+"    border-radius: 8px;"
+"    padding: 8px 12px;"
+"    margin-bottom: 4px;"
+"    font-weight: 500;"
+"    font-size: 12px;"
+"    border: 1px solid transparent;"
+"    background: transparent;"
+"    transition: all 120ms ease-in-out;"
+"}"
+".nav-btn:hover {"
+"    background-color: alpha(#3584e4, 0.12);"
+"}"
+".nav-btn.active {"
+"    background-color: alpha(#3584e4, 0.22);"
+"    border-color: alpha(#3584e4, 0.5);"
+"    color: #3584e4;"
+"    font-weight: 700;"
+"}"
+".header-bar {"
+"    padding: 10px 16px;"
+"    background-color: alpha(@theme_bg_color, 0.9);"
+"    border-bottom: 1px solid alpha(@theme_fg_color, 0.10);"
 "}"
 ".gallery-scroll {"
-"    background-color: alpha(@theme_bg_color, 0.5);"
+"    background-color: alpha(@theme_base_color, 0.2);"
 "}"
 ".wallpaper-card {"
-"    background-color: alpha(@theme_base_color, 0.9);"
-"    border-radius: 10px;"
-"    border: 1px solid alpha(@theme_fg_color, 0.14);"
-"    padding: 8px;"
-"    margin: 6px;"
-"    transition: all 150ms ease-in-out;"
+"    background-color: alpha(@theme_base_color, 0.85);"
+"    border-radius: 8px;"
+"    border: 1px solid alpha(@theme_fg_color, 0.12);"
+"    padding: 6px;"
+"    margin: 4px;"
+"    transition: all 120ms ease-in-out;"
 "}"
 ".wallpaper-card:hover {"
 "    border-color: #3584e4;"
-"    background-color: alpha(#3584e4, 0.10);"
+"    background-color: alpha(#3584e4, 0.08);"
 "}"
 ".wallpaper-card.active {"
 "    border: 2px solid #2ec27e;"
-"    background-color: alpha(#2ec27e, 0.14);"
+"    background-color: alpha(#2ec27e, 0.12);"
 "}"
 ".card-title {"
-"    font-size: 11px;"
+"    font-size: 10px;"
 "    font-weight: 500;"
-"    margin-top: 6px;"
+"    margin-top: 4px;"
 "}"
 ".active-badge {"
 "    background-color: #2ec27e;"
 "    color: white;"
 "    font-weight: bold;"
-"    font-size: 10px;"
-"    border-radius: 10px;"
-"    padding: 2px 6px;"
+"    font-size: 9px;"
+"    border-radius: 8px;"
+"    padding: 1px 5px;"
 "}"
-".bottom-bar {"
-"    padding: 10px 14px;"
+".footer-bar {"
+"    padding: 10px 16px;"
 "    background-color: alpha(@theme_bg_color, 0.95);"
-"    border-top: 1px solid alpha(@theme_fg_color, 0.12);"
+"    border-top: 1px solid alpha(@theme_fg_color, 0.10);"
+"}"
+".empty-state {"
+"    padding: 40px;"
+"}"
+".empty-state-icon {"
+"    opacity: 0.25;"
+"}"
+".empty-state-title {"
+"    font-size: 18px;"
+"    font-weight: 700;"
+"    margin-top: 16px;"
+"    opacity: 0.7;"
+"}"
+".empty-state-subtitle {"
+"    font-size: 13px;"
+"    margin-top: 6px;"
+"    opacity: 0.45;"
 "}";
+
+/* Structure to manage a grid view (Live or Static) */
+typedef struct {
+    GtkWidget *flow_box;
+    GtkWidget *folder_label;
+    GtkWidget *page_stack;      /* Switches between empty_state and gallery */
+    GtkWidget *empty_state;     /* Shown when no folder is loaded */
+    char       folder_path[LW_MAX_PATH];
+    char       items[MAX_WALLPAPERS][LW_MAX_PATH];
+    GtkWidget *card_widgets[MAX_WALLPAPERS];
+    GtkWidget *badge_widgets[MAX_WALLPAPERS];
+    GtkWidget *title_widgets[MAX_WALLPAPERS];
+    int        count;
+    int        active_idx;
+} GridView;
 
 struct GuiCtx {
     AppState     *state;
     WallpaperCtx *wallpaper;
 
     GtkWidget    *window;
-    GtkWidget    *folder_label;
+    GtkWidget    *stack;
+    GtkWidget    *nav_live_btn;
+    GtkWidget    *nav_static_btn;
     GtkWidget    *status_label;
-    GtkWidget    *flow_box;
-    GtkWidget    *scrolled_window;
     GtkWidget    *pause_btn;
     GtkWidget    *stop_btn;
 
-    /* Stored wallpaper metadata */
-    char          wallpaper_paths[MAX_LOADED_WALLPAPERS][LW_MAX_PATH];
-    GtkWidget    *card_widgets[MAX_LOADED_WALLPAPERS];
-    GtkWidget    *badge_widgets[MAX_LOADED_WALLPAPERS];
-    GtkWidget    *title_widgets[MAX_LOADED_WALLPAPERS];
-    int           wallpaper_count;
-    int           active_idx;
+    /* Live video grid */
+    GridView      live_grid;
+
+    /* Static image grid */
+    GridView      static_grid;
+    char          active_static_path[LW_MAX_PATH];
 
     guint         render_timer_id;
 };
 
-/* Supported video file extensions */
-static const char *const SUPPORTED_EXTS[] = {
-    ".mp4", ".mkv", ".webm", ".avi", ".mov", NULL
-};
-
 /* Forward declarations */
 static gboolean on_render_tick(gpointer user_data);
-static void on_choose_folder_clicked(GtkButton *button, gpointer user_data);
-static void on_card_clicked(GtkButton *button, gpointer user_data);
+static void on_select_video_folder_clicked(GtkButton *button, gpointer user_data);
+static void on_select_image_folder_clicked(GtkButton *button, gpointer user_data);
+static void on_live_card_clicked(GtkButton *button, gpointer user_data);
+static void on_static_card_clicked(GtkButton *button, gpointer user_data);
+static void on_nav_tab_clicked(GtkButton *button, gpointer user_data);
 static void on_pause_toggled(GtkButton *button, gpointer user_data);
 static void on_stop_clicked(GtkButton *button, gpointer user_data);
 static void on_quit_clicked(GtkButton *button, gpointer user_data);
 static gboolean on_window_delete_event(GtkWidget *widget, GdkEvent *event, gpointer user_data);
-static void populate_folder_wallpapers(GuiCtx *ctx, const char *folder_path, const char *active_filepath);
-static void update_card_visuals(GuiCtx *ctx, int active_idx);
-static void start_wallpaper_playback(GuiCtx *ctx, const char *filepath);
-static void stop_wallpaper_playback(GuiCtx *ctx);
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Check if a filename ends with a supported video extension
- * ──────────────────────────────────────────────────────────────────────────── */
-static gboolean is_video_file(const char *filename)
-{
-    if (!filename) return FALSE;
-    size_t name_len = strlen(filename);
-
-    for (int i = 0; SUPPORTED_EXTS[i] != NULL; i++) {
-        size_t ext_len = strlen(SUPPORTED_EXTS[i]);
-        if (name_len >= ext_len) {
-            if (strcasecmp(filename + (name_len - ext_len), SUPPORTED_EXTS[i]) == 0) {
-                return TRUE;
-            }
-        }
-    }
-    return FALSE;
-}
+static void populate_live_grid(GuiCtx *ctx, const char *folder, const char *active_file);
+static void populate_static_grid(GuiCtx *ctx, const char *folder, const char *active_file);
+static void update_grid_visuals(GridView *grid, int active_idx);
+static void start_live_wallpaper(GuiCtx *ctx, const char *filepath);
+static void stop_live_wallpaper(GuiCtx *ctx);
+static void apply_static_wallpaper(GuiCtx *ctx, const char *filepath);
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Confirmation Dialogs
  * ──────────────────────────────────────────────────────────────────────────── */
-static gboolean confirm_apply_wallpaper(GtkWindow *parent, const char *filename)
-{
-    char *base = g_path_get_basename(filename);
-    GtkWidget *dialog = gtk_message_dialog_new(
-        parent,
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        GTK_MESSAGE_QUESTION,
-        GTK_BUTTONS_CANCEL,
-        "Apply Live Wallpaper?");
-
-    gtk_message_dialog_format_secondary_text(
-        GTK_MESSAGE_DIALOG(dialog),
-        "Do you want to set \"%s\" as your active desktop wallpaper?",
-        base);
-
-    gtk_dialog_add_button(GTK_DIALOG(dialog), "Apply Wallpaper", GTK_RESPONSE_ACCEPT);
-    gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_ACCEPT);
-
-    gint result = gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
-    g_free(base);
-
-    return (result == GTK_RESPONSE_ACCEPT);
-}
-
-static gboolean confirm_turn_off_wallpaper(GtkWindow *parent)
+static gboolean confirm_action(GtkWindow *parent, const char *title, const char *msg, const char *btn_text)
 {
     GtkWidget *dialog = gtk_message_dialog_new(
         parent,
         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
         GTK_MESSAGE_QUESTION,
         GTK_BUTTONS_CANCEL,
-        "Turn Off Live Wallpaper?");
+        "%s", title);
 
-    gtk_message_dialog_format_secondary_text(
-        GTK_MESSAGE_DIALOG(dialog),
-        "Are you sure you want to stop the wallpaper playback and restore the default desktop?");
-
-    gtk_dialog_add_button(GTK_DIALOG(dialog), "Turn Off", GTK_RESPONSE_ACCEPT);
+    gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dialog), "%s", msg);
+    gtk_dialog_add_button(GTK_DIALOG(dialog), btn_text, GTK_RESPONSE_ACCEPT);
     gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_ACCEPT);
 
-    gint result = gtk_dialog_run(GTK_DIALOG(dialog));
+    gint res = gtk_dialog_run(GTK_DIALOG(dialog));
     gtk_widget_destroy(dialog);
-
-    return (result == GTK_RESPONSE_ACCEPT);
+    return (res == GTK_RESPONSE_ACCEPT);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Playback Control
+ * Empty State Widget Factory
  * ──────────────────────────────────────────────────────────────────────────── */
-static void start_wallpaper_playback(GuiCtx *ctx, const char *filepath)
+static GtkWidget *create_empty_state(const char *icon_name,
+                                     const char *title,
+                                     const char *subtitle)
+{
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(vbox), "empty-state");
+    gtk_widget_set_halign(vbox, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(vbox, GTK_ALIGN_CENTER);
+
+    GtkWidget *icon = gtk_image_new_from_icon_name(icon_name, GTK_ICON_SIZE_INVALID);
+    gtk_image_set_pixel_size(GTK_IMAGE(icon), 72);
+    gtk_style_context_add_class(gtk_widget_get_style_context(icon), "empty-state-icon");
+    gtk_box_pack_start(GTK_BOX(vbox), icon, FALSE, FALSE, 0);
+
+    GtkWidget *lbl_title = gtk_label_new(title);
+    gtk_style_context_add_class(gtk_widget_get_style_context(lbl_title), "empty-state-title");
+    gtk_box_pack_start(GTK_BOX(vbox), lbl_title, FALSE, FALSE, 0);
+
+    GtkWidget *lbl_sub = gtk_label_new(subtitle);
+    gtk_style_context_add_class(gtk_widget_get_style_context(lbl_sub), "empty-state-subtitle");
+    gtk_label_set_justify(GTK_LABEL(lbl_sub), GTK_JUSTIFY_CENTER);
+    gtk_label_set_line_wrap(GTK_LABEL(lbl_sub), TRUE);
+    gtk_box_pack_start(GTK_BOX(vbox), lbl_sub, FALSE, FALSE, 0);
+
+    return vbox;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Live Wallpaper Controls
+ * ──────────────────────────────────────────────────────────────────────────── */
+static void start_live_wallpaper(GuiCtx *ctx, const char *filepath)
 {
     if (!filepath || !filepath[0]) return;
 
@@ -198,7 +247,7 @@ static void start_wallpaper_playback(GuiCtx *ctx, const char *filepath)
     decoder_stop(ctx->state);
 
     if (decoder_start(ctx->state, filepath) != 0) {
-        gui_set_status(ctx, "Error: Failed to decode video file.");
+        gui_set_status(ctx, "Error: Could not open video file.");
         return;
     }
 
@@ -207,15 +256,17 @@ static void start_wallpaper_playback(GuiCtx *ctx, const char *filepath)
     }
 
     if (ctx->state->video_width > 0 && ctx->state->video_height > 0) {
-        wallpaper_set_video_size(ctx->wallpaper,
-                                 ctx->state->video_width,
-                                 ctx->state->video_height);
+        wallpaper_set_video_size(ctx->wallpaper, ctx->state->video_width, ctx->state->video_height);
     }
 
     wallpaper_show(ctx->wallpaper);
     gui_start_render_timer(ctx);
 
     config_save(filepath);
+
+    /* Clear static active state */
+    ctx->active_static_path[0] = '\0';
+    update_grid_visuals(&ctx->static_grid, -1);
 
     if (ctx->pause_btn) {
         gtk_button_set_label(GTK_BUTTON(ctx->pause_btn), "Pause");
@@ -224,26 +275,21 @@ static void start_wallpaper_playback(GuiCtx *ctx, const char *filepath)
     }
 
     char *base = g_path_get_basename(filepath);
-    char status_buf[512];
-    if (ctx->state->video_width > 0) {
-        snprintf(status_buf, sizeof(status_buf),
-                 "Playing: %s (%dx%d @ %.0ffps)",
-                 base, ctx->state->video_width, ctx->state->video_height,
-                 ctx->state->video_fps > 0 ? ctx->state->video_fps : 30.0);
-    } else {
-        snprintf(status_buf, sizeof(status_buf), "Playing: %s", base);
-    }
-    gui_set_status(ctx, status_buf);
+    char buf[512];
+    snprintf(buf, sizeof(buf), "🎬 Live Wallpaper: %s (%dx%d @ %.0ffps)",
+             base, ctx->state->video_width, ctx->state->video_height,
+             ctx->state->video_fps > 0 ? ctx->state->video_fps : 30.0);
+    gui_set_status(ctx, buf);
     g_free(base);
 }
 
-static void stop_wallpaper_playback(GuiCtx *ctx)
+static void stop_live_wallpaper(GuiCtx *ctx)
 {
     gui_stop_render_timer(ctx);
     decoder_stop(ctx->state);
     wallpaper_hide(ctx->wallpaper);
 
-    update_card_visuals(ctx, -1);
+    update_grid_visuals(&ctx->live_grid, -1);
 
     if (ctx->pause_btn) {
         gtk_button_set_label(GTK_BUTTON(ctx->pause_btn), "Pause");
@@ -254,16 +300,39 @@ static void stop_wallpaper_playback(GuiCtx *ctx)
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Update Card Visuals (CSS active class & Checkmark Badge)
+ * Static Wallpaper Controls (GNOME GSettings)
  * ──────────────────────────────────────────────────────────────────────────── */
-static void update_card_visuals(GuiCtx *ctx, int active_idx)
+static void apply_static_wallpaper(GuiCtx *ctx, const char *filepath)
 {
-    ctx->active_idx = active_idx;
+    if (!filepath || !filepath[0]) return;
 
-    for (int i = 0; i < ctx->wallpaper_count; i++) {
-        GtkWidget *card  = ctx->card_widgets[i];
-        GtkWidget *badge = ctx->badge_widgets[i];
-        GtkWidget *title = ctx->title_widgets[i];
+    /* Stop video surface so native GNOME background shows */
+    stop_live_wallpaper(ctx);
+
+    if (static_wallpaper_apply(filepath)) {
+        snprintf(ctx->active_static_path, sizeof(ctx->active_static_path), "%s", filepath);
+
+        char *base = g_path_get_basename(filepath);
+        char buf[512];
+        snprintf(buf, sizeof(buf), "🖼️ Static Wallpaper: %s (Applied to GNOME)", base);
+        gui_set_status(ctx, buf);
+        g_free(base);
+    } else {
+        gui_set_status(ctx, "Error: Failed to apply static wallpaper.");
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Visual Active Indicator & Card Classes
+ * ──────────────────────────────────────────────────────────────────────────── */
+static void update_grid_visuals(GridView *grid, int active_idx)
+{
+    grid->active_idx = active_idx;
+
+    for (int i = 0; i < grid->count; i++) {
+        GtkWidget *card  = grid->card_widgets[i];
+        GtkWidget *badge = grid->badge_widgets[i];
+        GtkWidget *title = grid->title_widgets[i];
         if (!card) continue;
 
         GtkStyleContext *sc = gtk_widget_get_style_context(card);
@@ -293,56 +362,220 @@ static void update_card_visuals(GuiCtx *ctx, int active_idx)
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Wallpaper Card Clicked
+ * Card Click Handlers
  * ──────────────────────────────────────────────────────────────────────────── */
-static void on_card_clicked(GtkButton *button, gpointer user_data)
+static void on_live_card_clicked(GtkButton *button, gpointer user_data)
 {
     GuiCtx *ctx = (GuiCtx *)user_data;
     int idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "idx"));
+    if (idx < 0 || idx >= ctx->live_grid.count) return;
 
-    if (idx < 0 || idx >= ctx->wallpaper_count) return;
+    const char *target = ctx->live_grid.items[idx];
+    char *base = g_path_get_basename(target);
 
-    const char *target_path = ctx->wallpaper_paths[idx];
-
-    if (idx == ctx->active_idx && atomic_load(&ctx->state->playing)) {
-        /* Already active -> Confirm Turn Off */
-        if (confirm_turn_off_wallpaper(GTK_WINDOW(ctx->window))) {
-            stop_wallpaper_playback(ctx);
+    if (idx == ctx->live_grid.active_idx && atomic_load(&ctx->state->playing)) {
+        if (confirm_action(GTK_WINDOW(ctx->window), "Turn Off Live Wallpaper?",
+                           "Stop wallpaper playback and restore desktop background?", "Turn Off")) {
+            stop_live_wallpaper(ctx);
         }
     } else {
-        /* Inactive -> Confirm Turn On */
-        if (confirm_apply_wallpaper(GTK_WINDOW(ctx->window), target_path)) {
-            start_wallpaper_playback(ctx, target_path);
-            update_card_visuals(ctx, idx);
+        char msg[512];
+        snprintf(msg, sizeof(msg), "Set \"%s\" as your live desktop wallpaper?", base);
+        if (confirm_action(GTK_WINDOW(ctx->window), "Apply Live Wallpaper", msg, "Apply Wallpaper")) {
+            start_live_wallpaper(ctx, target);
+            update_grid_visuals(&ctx->live_grid, idx);
         }
     }
+    g_free(base);
+}
+
+static void on_static_card_clicked(GtkButton *button, gpointer user_data)
+{
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    int idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "idx"));
+    if (idx < 0 || idx >= ctx->static_grid.count) return;
+
+    const char *target = ctx->static_grid.items[idx];
+    char *base = g_path_get_basename(target);
+
+    if (idx == ctx->static_grid.active_idx) {
+        if (confirm_action(GTK_WINDOW(ctx->window), "Clear Wallpaper?",
+                           "Reset desktop background?", "Clear")) {
+            ctx->active_static_path[0] = '\0';
+            update_grid_visuals(&ctx->static_grid, -1);
+            gui_set_status(ctx, "Static wallpaper cleared.");
+        }
+    } else {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "Apply \"%s\" as your desktop background?", base);
+        if (confirm_action(GTK_WINDOW(ctx->window), "Set Desktop Background", msg, "Set Background")) {
+            apply_static_wallpaper(ctx, target);
+            update_grid_visuals(&ctx->static_grid, idx);
+        }
+    }
+    g_free(base);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Scan Folder & Build Grid Gallery
+ * Populate Live Video Grid
  * ──────────────────────────────────────────────────────────────────────────── */
-static void populate_folder_wallpapers(GuiCtx *ctx, const char *folder_path, const char *active_filepath)
+static void populate_live_grid(GuiCtx *ctx, const char *folder, const char *active_file)
 {
-    if (!folder_path || !ctx->flow_box) return;
+    if (!folder || !ctx->live_grid.flow_box) return;
 
-    /* Clear existing grid children */
-    GList *children = gtk_container_get_children(GTK_CONTAINER(ctx->flow_box));
+    GList *children = gtk_container_get_children(GTK_CONTAINER(ctx->live_grid.flow_box));
     for (GList *l = children; l != NULL; l = l->next) {
         gtk_widget_destroy(GTK_WIDGET(l->data));
     }
     g_list_free(children);
 
-    ctx->wallpaper_count = 0;
-    ctx->active_idx = -1;
+    ctx->live_grid.count = 0;
+    ctx->live_grid.active_idx = -1;
+    snprintf(ctx->live_grid.folder_path, sizeof(ctx->live_grid.folder_path), "%s", folder);
 
-    /* Read directory */
-    GDir *dir = g_dir_open(folder_path, 0, NULL);
-    if (!dir) return;
+    /* Persist this folder so we can restore it next launch */
+    config_save_live_folder(folder);
+
+    GDir *dir = g_dir_open(folder, 0, NULL);
+    if (!dir) {
+        if (ctx->live_grid.page_stack)
+            gtk_stack_set_visible_child_name(GTK_STACK(ctx->live_grid.page_stack), "empty");
+        return;
+    }
 
     GList *filenames = NULL;
     const char *name = NULL;
     while ((name = g_dir_read_name(dir)) != NULL) {
-        if (is_video_file(name)) {
+        const char *exts[] = { ".mp4", ".mkv", ".webm", ".avi", ".mov", NULL };
+        size_t nlen = strlen(name);
+        for (int i = 0; exts[i] != NULL; i++) {
+            size_t elen = strlen(exts[i]);
+            if (nlen >= elen && strcasecmp(name + (nlen - elen), exts[i]) == 0) {
+                filenames = g_list_prepend(filenames, g_strdup(name));
+                break;
+            }
+        }
+    }
+    g_dir_close(dir);
+
+    filenames = g_list_sort(filenames, (GCompareFunc)g_strcmp0);
+
+    guint total = g_list_length(filenames);
+    char hdr[LW_MAX_PATH + 64];
+    snprintf(hdr, sizeof(hdr), "📁 <b>Video Folder:</b> %s  <span alpha='60%%'>(%u videos)</span>", folder, total);
+    gtk_label_set_markup(GTK_LABEL(ctx->live_grid.folder_label), hdr);
+
+    if (total == 0) {
+        g_list_free_full(filenames, g_free);
+        if (ctx->live_grid.page_stack)
+            gtk_stack_set_visible_child_name(GTK_STACK(ctx->live_grid.page_stack), "empty");
+        return;
+    }
+
+    /* Switch to grid view */
+    if (ctx->live_grid.page_stack)
+        gtk_stack_set_visible_child_name(GTK_STACK(ctx->live_grid.page_stack), "gallery");
+
+    int target_active = -1;
+
+    for (GList *l = filenames; l != NULL; l = l->next) {
+        if (ctx->live_grid.count >= MAX_WALLPAPERS) break;
+
+        const char *fname = (const char *)l->data;
+        char *fpath = g_build_filename(folder, fname, NULL);
+        int idx = ctx->live_grid.count;
+        snprintf(ctx->live_grid.items[idx], LW_MAX_PATH, "%s", fpath);
+
+        gboolean is_active = (active_file && strcmp(fpath, active_file) == 0);
+        if (is_active) target_active = idx;
+
+        /* Compact Card Button */
+        GtkWidget *card = gtk_button_new();
+        GtkStyleContext *sc = gtk_widget_get_style_context(card);
+        gtk_style_context_add_class(sc, "wallpaper-card");
+        gtk_widget_set_size_request(card, THUMB_WIDTH + 12, THUMB_HEIGHT + 36);
+
+        g_object_set_data(G_OBJECT(card), "idx", GINT_TO_POINTER(idx));
+        g_object_set_data_full(G_OBJECT(card), "fname", g_strdup(fname), g_free);
+        g_signal_connect(card, "clicked", G_CALLBACK(on_live_card_clicked), ctx);
+
+        GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_container_add(GTK_CONTAINER(card), vbox);
+
+        GtkWidget *overlay = gtk_overlay_new();
+        gtk_box_pack_start(GTK_BOX(vbox), overlay, FALSE, FALSE, 0);
+
+        GdkPixbuf *thumb = thumbnail_generate(fpath, THUMB_WIDTH, THUMB_HEIGHT);
+        GtkWidget *img = thumb ? gtk_image_new_from_pixbuf(thumb)
+                               : gtk_image_new_from_icon_name("video-x-generic", GTK_ICON_SIZE_DIALOG);
+        if (thumb) g_object_unref(thumb);
+        gtk_container_add(GTK_CONTAINER(overlay), img);
+
+        /* Active Badge */
+        GtkWidget *badge = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+        gtk_style_context_add_class(gtk_widget_get_style_context(badge), "active-badge");
+        gtk_box_pack_start(GTK_BOX(badge), gtk_image_new_from_icon_name("emblem-ok-symbolic", GTK_ICON_SIZE_MENU), FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(badge), gtk_label_new("Active"), FALSE, FALSE, 0);
+        gtk_widget_set_halign(badge, GTK_ALIGN_END);
+        gtk_widget_set_valign(badge, GTK_ALIGN_START);
+        gtk_widget_set_margin_top(badge, 4);
+        gtk_widget_set_margin_end(badge, 4);
+        gtk_overlay_add_overlay(GTK_OVERLAY(overlay), badge);
+        gtk_widget_set_no_show_all(badge, TRUE);
+        gtk_widget_set_visible(badge, is_active);
+
+        /* Title */
+        GtkWidget *title = gtk_label_new(fname);
+        gtk_style_context_add_class(gtk_widget_get_style_context(title), "card-title");
+        gtk_label_set_ellipsize(GTK_LABEL(title), PANGO_ELLIPSIZE_MIDDLE);
+        gtk_label_set_max_width_chars(GTK_LABEL(title), 18);
+        gtk_box_pack_start(GTK_BOX(vbox), title, FALSE, FALSE, 0);
+
+        ctx->live_grid.card_widgets[idx]  = card;
+        ctx->live_grid.badge_widgets[idx] = badge;
+        ctx->live_grid.title_widgets[idx] = title;
+
+        gtk_flow_box_insert(GTK_FLOW_BOX(ctx->live_grid.flow_box), card, -1);
+        ctx->live_grid.count++;
+        g_free(fpath);
+    }
+
+    g_list_free_full(filenames, g_free);
+    gtk_widget_show_all(ctx->live_grid.flow_box);
+    update_grid_visuals(&ctx->live_grid, target_active);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Populate Static Image Grid
+ * ──────────────────────────────────────────────────────────────────────────── */
+static void populate_static_grid(GuiCtx *ctx, const char *folder, const char *active_file)
+{
+    if (!folder || !ctx->static_grid.flow_box) return;
+
+    GList *children = gtk_container_get_children(GTK_CONTAINER(ctx->static_grid.flow_box));
+    for (GList *l = children; l != NULL; l = l->next) {
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    }
+    g_list_free(children);
+
+    ctx->static_grid.count = 0;
+    ctx->static_grid.active_idx = -1;
+    snprintf(ctx->static_grid.folder_path, sizeof(ctx->static_grid.folder_path), "%s", folder);
+
+    /* Persist this folder so we can restore it next launch */
+    config_save_static_folder(folder);
+
+    GDir *dir = g_dir_open(folder, 0, NULL);
+    if (!dir) {
+        if (ctx->static_grid.page_stack)
+            gtk_stack_set_visible_child_name(GTK_STACK(ctx->static_grid.page_stack), "empty");
+        return;
+    }
+
+    GList *filenames = NULL;
+    const char *name = NULL;
+    while ((name = g_dir_read_name(dir)) != NULL) {
+        if (static_wallpaper_is_supported(name)) {
             filenames = g_list_prepend(filenames, g_strdup(name));
         }
     }
@@ -351,103 +584,209 @@ static void populate_folder_wallpapers(GuiCtx *ctx, const char *folder_path, con
     filenames = g_list_sort(filenames, (GCompareFunc)g_strcmp0);
 
     guint total = g_list_length(filenames);
-    char folder_text[LW_MAX_PATH + 64];
-    snprintf(folder_text, sizeof(folder_text),
-             "📁 <b>Wallpapers Folder:</b> %s  <span alpha='60%%'>(%u videos)</span>",
-             folder_path, total);
-    gtk_label_set_markup(GTK_LABEL(ctx->folder_label), folder_text);
+    char hdr[LW_MAX_PATH + 64];
+    snprintf(hdr, sizeof(hdr), "📁 <b>Image Folder:</b> %s  <span alpha='60%%'>(%u images)</span>", folder, total);
+    gtk_label_set_markup(GTK_LABEL(ctx->static_grid.folder_label), hdr);
 
-    int target_active_idx = -1;
+    if (total == 0) {
+        g_list_free_full(filenames, g_free);
+        if (ctx->static_grid.page_stack)
+            gtk_stack_set_visible_child_name(GTK_STACK(ctx->static_grid.page_stack), "empty");
+        return;
+    }
+
+    /* Switch to grid view */
+    if (ctx->static_grid.page_stack)
+        gtk_stack_set_visible_child_name(GTK_STACK(ctx->static_grid.page_stack), "gallery");
+
+    int target_active = -1;
 
     for (GList *l = filenames; l != NULL; l = l->next) {
-        if (ctx->wallpaper_count >= MAX_LOADED_WALLPAPERS) break;
+        if (ctx->static_grid.count >= MAX_WALLPAPERS) break;
 
         const char *fname = (const char *)l->data;
-        char *full_path = g_build_filename(folder_path, fname, NULL);
-        int idx = ctx->wallpaper_count;
+        char *fpath = g_build_filename(folder, fname, NULL);
+        int idx = ctx->static_grid.count;
+        snprintf(ctx->static_grid.items[idx], LW_MAX_PATH, "%s", fpath);
 
-        snprintf(ctx->wallpaper_paths[idx], LW_MAX_PATH, "%s", full_path);
+        gboolean is_active = (active_file && strcmp(fpath, active_file) == 0);
+        if (is_active) target_active = idx;
 
-        gboolean is_active = (active_filepath && strcmp(full_path, active_filepath) == 0);
-        if (is_active) {
-            target_active_idx = idx;
-        }
-
-        /* ── Card Button Container ── */
-        GtkWidget *card_btn = gtk_button_new();
-        GtkStyleContext *sc = gtk_widget_get_style_context(card_btn);
+        /* Compact Card Button */
+        GtkWidget *card = gtk_button_new();
+        GtkStyleContext *sc = gtk_widget_get_style_context(card);
         gtk_style_context_add_class(sc, "wallpaper-card");
-        gtk_widget_set_size_request(card_btn, THUMB_WIDTH + 16, THUMB_HEIGHT + 48);
+        gtk_widget_set_size_request(card, THUMB_WIDTH + 12, THUMB_HEIGHT + 36);
 
-        g_object_set_data(G_OBJECT(card_btn), "idx", GINT_TO_POINTER(idx));
-        g_object_set_data_full(G_OBJECT(card_btn), "fname", g_strdup(fname), g_free);
-        g_signal_connect(card_btn, "clicked", G_CALLBACK(on_card_clicked), ctx);
+        g_object_set_data(G_OBJECT(card), "idx", GINT_TO_POINTER(idx));
+        g_object_set_data_full(G_OBJECT(card), "fname", g_strdup(fname), g_free);
+        g_signal_connect(card, "clicked", G_CALLBACK(on_static_card_clicked), ctx);
 
-        /* VBox inside card */
-        GtkWidget *card_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-        gtk_container_add(GTK_CONTAINER(card_btn), card_vbox);
+        GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_container_add(GTK_CONTAINER(card), vbox);
 
-        /* Overlay for thumbnail + checkmark badge */
         GtkWidget *overlay = gtk_overlay_new();
-        gtk_box_pack_start(GTK_BOX(card_vbox), overlay, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(vbox), overlay, FALSE, FALSE, 0);
 
-        /* Thumbnail extraction */
-        GdkPixbuf *thumb = thumbnail_generate(full_path, THUMB_WIDTH, THUMB_HEIGHT);
-        GtkWidget *thumb_img = NULL;
-        if (thumb) {
-            thumb_img = gtk_image_new_from_pixbuf(thumb);
-            g_object_unref(thumb);
-        } else {
-            thumb_img = gtk_image_new_from_icon_name("video-x-generic", GTK_ICON_SIZE_DIALOG);
-            gtk_widget_set_size_request(thumb_img, THUMB_WIDTH, THUMB_HEIGHT);
-        }
-        gtk_container_add(GTK_CONTAINER(overlay), thumb_img);
+        GdkPixbuf *thumb = thumbnail_generate(fpath, THUMB_WIDTH, THUMB_HEIGHT);
+        GtkWidget *img = thumb ? gtk_image_new_from_pixbuf(thumb)
+                               : gtk_image_new_from_icon_name("image-x-generic", GTK_ICON_SIZE_DIALOG);
+        if (thumb) g_object_unref(thumb);
+        gtk_container_add(GTK_CONTAINER(overlay), img);
 
-        /* Green Checkmark Badge overlay */
-        GtkWidget *badge_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
-        GtkStyleContext *badge_sc = gtk_widget_get_style_context(badge_box);
-        gtk_style_context_add_class(badge_sc, "active-badge");
+        /* Active Badge */
+        GtkWidget *badge = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+        gtk_style_context_add_class(gtk_widget_get_style_context(badge), "active-badge");
+        gtk_box_pack_start(GTK_BOX(badge), gtk_image_new_from_icon_name("emblem-ok-symbolic", GTK_ICON_SIZE_MENU), FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(badge), gtk_label_new("Active"), FALSE, FALSE, 0);
+        gtk_widget_set_halign(badge, GTK_ALIGN_END);
+        gtk_widget_set_valign(badge, GTK_ALIGN_START);
+        gtk_widget_set_margin_top(badge, 4);
+        gtk_widget_set_margin_end(badge, 4);
+        gtk_overlay_add_overlay(GTK_OVERLAY(overlay), badge);
+        gtk_widget_set_no_show_all(badge, TRUE);
+        gtk_widget_set_visible(badge, is_active);
 
-        GtkWidget *tick_icon = gtk_image_new_from_icon_name("emblem-ok-symbolic", GTK_ICON_SIZE_MENU);
-        gtk_box_pack_start(GTK_BOX(badge_box), tick_icon, FALSE, FALSE, 0);
+        /* Title */
+        GtkWidget *title = gtk_label_new(fname);
+        gtk_style_context_add_class(gtk_widget_get_style_context(title), "card-title");
+        gtk_label_set_ellipsize(GTK_LABEL(title), PANGO_ELLIPSIZE_MIDDLE);
+        gtk_label_set_max_width_chars(GTK_LABEL(title), 18);
+        gtk_box_pack_start(GTK_BOX(vbox), title, FALSE, FALSE, 0);
 
-        GtkWidget *badge_lbl = gtk_label_new("Active");
-        gtk_box_pack_start(GTK_BOX(badge_box), badge_lbl, FALSE, FALSE, 0);
+        ctx->static_grid.card_widgets[idx]  = card;
+        ctx->static_grid.badge_widgets[idx] = badge;
+        ctx->static_grid.title_widgets[idx] = title;
 
-        gtk_widget_set_halign(badge_box, GTK_ALIGN_END);
-        gtk_widget_set_valign(badge_box, GTK_ALIGN_START);
-        gtk_widget_set_margin_top(badge_box, 6);
-        gtk_widget_set_margin_end(badge_box, 6);
-        gtk_overlay_add_overlay(GTK_OVERLAY(overlay), badge_box);
-        gtk_widget_set_visible(badge_box, is_active);
-
-        /* Filename title label */
-        GtkWidget *title_lbl = gtk_label_new(fname);
-        GtkStyleContext *title_sc = gtk_widget_get_style_context(title_lbl);
-        gtk_style_context_add_class(title_sc, "card-title");
-        gtk_label_set_ellipsize(GTK_LABEL(title_lbl), PANGO_ELLIPSIZE_MIDDLE);
-        gtk_label_set_max_width_chars(GTK_LABEL(title_lbl), 22);
-        gtk_box_pack_start(GTK_BOX(card_vbox), title_lbl, FALSE, FALSE, 0);
-
-        /* Save references */
-        ctx->card_widgets[idx]  = card_btn;
-        ctx->badge_widgets[idx] = badge_box;
-        ctx->title_widgets[idx] = title_lbl;
-
-        /* Insert into FlowBox */
-        gtk_flow_box_insert(GTK_FLOW_BOX(ctx->flow_box), card_btn, -1);
-
-        ctx->wallpaper_count++;
-        g_free(full_path);
+        gtk_flow_box_insert(GTK_FLOW_BOX(ctx->static_grid.flow_box), card, -1);
+        ctx->static_grid.count++;
+        g_free(fpath);
     }
 
     g_list_free_full(filenames, g_free);
+    gtk_widget_show_all(ctx->static_grid.flow_box);
+    update_grid_visuals(&ctx->static_grid, target_active);
+}
 
-    gtk_widget_show_all(ctx->flow_box);
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Sidebar Tab Switching
+ * ──────────────────────────────────────────────────────────────────────────── */
+static void on_nav_tab_clicked(GtkButton *button, gpointer user_data)
+{
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    const char *tab_name = (const char *)g_object_get_data(G_OBJECT(button), "tab");
 
-    if (target_active_idx >= 0) {
-        update_card_visuals(ctx, target_active_idx);
+    if (!tab_name) return;
+
+    gtk_stack_set_visible_child_name(GTK_STACK(ctx->stack), tab_name);
+
+    if (strcmp(tab_name, "live") == 0) {
+        gtk_style_context_add_class(gtk_widget_get_style_context(ctx->nav_live_btn), "active");
+        gtk_style_context_remove_class(gtk_widget_get_style_context(ctx->nav_static_btn), "active");
+    } else {
+        gtk_style_context_add_class(gtk_widget_get_style_context(ctx->nav_static_btn), "active");
+        gtk_style_context_remove_class(gtk_widget_get_style_context(ctx->nav_live_btn), "active");
     }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Folder Choosers
+ * ──────────────────────────────────────────────────────────────────────────── */
+static void on_select_video_folder_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    GuiCtx *ctx = (GuiCtx *)user_data;
+
+    GtkWidget *dialog = gtk_file_chooser_dialog_new(
+        "Select Live Video Wallpapers Folder",
+        GTK_WINDOW(ctx->window),
+        GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Select Folder", GTK_RESPONSE_ACCEPT,
+        NULL);
+
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        char *folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+        if (folder) {
+            populate_live_grid(ctx, folder, NULL);
+            g_free(folder);
+        }
+    }
+    gtk_widget_destroy(dialog);
+}
+
+static void on_select_image_folder_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    GuiCtx *ctx = (GuiCtx *)user_data;
+
+    GtkWidget *dialog = gtk_file_chooser_dialog_new(
+        "Select Static Image Wallpapers Folder",
+        GTK_WINDOW(ctx->window),
+        GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+        "_Cancel", GTK_RESPONSE_CANCEL,
+        "_Select Folder", GTK_RESPONSE_ACCEPT,
+        NULL);
+
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        char *folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+        if (folder) {
+            populate_static_grid(ctx, folder, NULL);
+            g_free(folder);
+        }
+    }
+    gtk_widget_destroy(dialog);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Control Callbacks
+ * ──────────────────────────────────────────────────────────────────────────── */
+static void on_pause_toggled(GtkButton *button, gpointer user_data)
+{
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!atomic_load(&ctx->state->playing)) return;
+
+    if (atomic_load(&ctx->state->paused)) {
+        decoder_resume(ctx->state);
+        gtk_button_set_label(button, "Pause");
+        gtk_button_set_image(button, gtk_image_new_from_icon_name("media-playback-pause-symbolic", GTK_ICON_SIZE_BUTTON));
+        gui_set_status(ctx, "Live playback resumed.");
+    } else {
+        decoder_pause(ctx->state);
+        gtk_button_set_label(button, "Resume");
+        gtk_button_set_image(button, gtk_image_new_from_icon_name("media-playback-start-symbolic", GTK_ICON_SIZE_BUTTON));
+        gui_set_status(ctx, "Live playback paused.");
+    }
+}
+
+static void on_stop_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    GuiCtx *ctx = (GuiCtx *)user_data;
+
+    if (!atomic_load(&ctx->state->playing) && ctx->active_static_path[0] == '\0') return;
+
+    if (confirm_action(GTK_WINDOW(ctx->window), "Turn Off Wallpaper?", "Turn off the current desktop wallpaper?", "Turn Off")) {
+        stop_live_wallpaper(ctx);
+        ctx->active_static_path[0] = '\0';
+        update_grid_visuals(&ctx->static_grid, -1);
+    }
+}
+
+static void on_quit_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    (void)user_data;
+    gtk_main_quit();
+}
+
+static gboolean on_window_delete_event(GtkWidget *widget, GdkEvent *event, gpointer user_data)
+{
+    (void)widget;
+    (void)event;
+    (void)user_data;
+    gtk_main_quit();
+    return FALSE;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -477,83 +816,28 @@ static gboolean on_render_tick(gpointer user_data)
     return G_SOURCE_CONTINUE;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Top / Bottom Action Buttons
- * ──────────────────────────────────────────────────────────────────────────── */
-static void on_choose_folder_clicked(GtkButton *button, gpointer user_data)
-{
-    (void)button;
-    GuiCtx *ctx = (GuiCtx *)user_data;
-
-    GtkWidget *dialog = gtk_file_chooser_dialog_new(
-        "Select Wallpapers Folder",
-        GTK_WINDOW(ctx->window),
-        GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
-        "_Cancel", GTK_RESPONSE_CANCEL,
-        "_Select Folder", GTK_RESPONSE_ACCEPT,
-        NULL);
-
-    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-        char *folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-        if (folder) {
-            populate_folder_wallpapers(ctx, folder, NULL);
-            if (ctx->wallpaper_count == 0) {
-                gui_set_status(ctx, "No video files found in selected folder.");
-            } else {
-                gui_set_status(ctx, "Folder loaded. Click any wallpaper card to set it as background.");
-            }
-            g_free(folder);
-        }
-    }
-
-    gtk_widget_destroy(dialog);
-}
-
-static void on_pause_toggled(GtkButton *button, gpointer user_data)
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Deferred folder restore (runs after window is fully realized)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static gboolean on_restore_folders_idle(gpointer user_data)
 {
     GuiCtx *ctx = (GuiCtx *)user_data;
 
-    if (!atomic_load(&ctx->state->playing)) return;
-
-    if (atomic_load(&ctx->state->paused)) {
-        decoder_resume(ctx->state);
-        gtk_button_set_label(button, "Pause");
-        gtk_button_set_image(button, gtk_image_new_from_icon_name("media-playback-pause-symbolic", GTK_ICON_SIZE_BUTTON));
-        gui_set_status(ctx, "Playback resumed.");
-    } else {
-        decoder_pause(ctx->state);
-        gtk_button_set_label(button, "Resume");
-        gtk_button_set_image(button, gtk_image_new_from_icon_name("media-playback-start-symbolic", GTK_ICON_SIZE_BUTTON));
-        gui_set_status(ctx, "Playback paused.");
+    char saved_live[LW_MAX_PATH] = {0};
+    if (config_load_live_folder(saved_live, sizeof(saved_live)) &&
+        saved_live[0] != '\0' &&
+        g_file_test(saved_live, G_FILE_TEST_IS_DIR)) {
+        populate_live_grid(ctx, saved_live, NULL);
     }
-}
 
-static void on_stop_clicked(GtkButton *button, gpointer user_data)
-{
-    (void)button;
-    GuiCtx *ctx = (GuiCtx *)user_data;
-
-    if (!atomic_load(&ctx->state->playing)) return;
-
-    if (confirm_turn_off_wallpaper(GTK_WINDOW(ctx->window))) {
-        stop_wallpaper_playback(ctx);
+    char saved_static[LW_MAX_PATH] = {0};
+    if (config_load_static_folder(saved_static, sizeof(saved_static)) &&
+        saved_static[0] != '\0' &&
+        g_file_test(saved_static, G_FILE_TEST_IS_DIR)) {
+        populate_static_grid(ctx, saved_static, NULL);
     }
-}
 
-static void on_quit_clicked(GtkButton *button, gpointer user_data)
-{
-    (void)button;
-    (void)user_data;
-    gtk_main_quit();
-}
-
-static gboolean on_window_delete_event(GtkWidget *widget, GdkEvent *event, gpointer user_data)
-{
-    (void)widget;
-    (void)event;
-    (void)user_data;
-    gtk_main_quit();
-    return FALSE;
+    return G_SOURCE_REMOVE; /* one-shot */
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -567,13 +851,10 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
 
     ctx->state = state;
     ctx->wallpaper = wallpaper;
-    ctx->render_timer_id = 0;
-    ctx->wallpaper_count = 0;
-    ctx->active_idx = -1;
 
     /* Apply custom modern CSS styling */
     GtkCssProvider *provider = gtk_css_provider_new();
-    gtk_css_provider_load_from_data(provider, CUSTOM_CSS, -1, NULL);
+    gtk_css_provider_load_from_data(provider, STUDIO_CSS, -1, NULL);
     gtk_style_context_add_provider_for_screen(
         gdk_screen_get_default(),
         GTK_STYLE_PROVIDER(provider),
@@ -583,103 +864,261 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
     /* Main Window */
     ctx->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(ctx->window), "Live Wallpaper Studio");
-    gtk_window_set_default_size(GTK_WINDOW(ctx->window), 680, 520);
+    gtk_window_set_default_size(GTK_WINDOW(ctx->window), 780, 520);
     gtk_window_set_position(GTK_WINDOW(ctx->window), GTK_WIN_POS_CENTER);
 
-    GtkStyleContext *win_sc = gtk_widget_get_style_context(ctx->window);
-    gtk_style_context_add_class(win_sc, "main-window");
+    /* Set Application SVG Icon */
+    GError *err = NULL;
+    GdkPixbuf *app_icon = gdk_pixbuf_new_from_file("assets/live-wallpaper.svg", &err);
+    if (app_icon) {
+        gtk_window_set_icon(GTK_WINDOW(ctx->window), app_icon);
+    } else {
+        if (err) g_error_free(err);
+    }
 
+    gtk_style_context_add_class(gtk_widget_get_style_context(ctx->window), "studio-window");
     g_signal_connect(ctx->window, "delete-event", G_CALLBACK(on_window_delete_event), ctx);
 
-    /* Main Layout */
-    GtkWidget *root_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_container_add(GTK_CONTAINER(ctx->window), root_vbox);
+    /* Root Horizontal Box: Sidebar (Left) + Main Content (Right) */
+    GtkWidget *root_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_container_add(GTK_CONTAINER(ctx->window), root_hbox);
 
-    /* ── Top Header Bar ── */
-    GtkWidget *top_header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-    GtkStyleContext *hdr_sc = gtk_widget_get_style_context(top_header);
-    gtk_style_context_add_class(hdr_sc, "top-header");
-    gtk_box_pack_start(GTK_BOX(root_vbox), top_header, FALSE, FALSE, 0);
+    /* ═══════════════════════════════════════════════════════════════════════
+     * LEFT SIDEBAR
+     * ═══════════════════════════════════════════════════════════════════════ */
+    GtkWidget *sidebar = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_style_context_add_class(gtk_widget_get_style_context(sidebar), "sidebar");
+    gtk_widget_set_size_request(sidebar, 180, -1);
+    gtk_box_pack_start(GTK_BOX(root_hbox), sidebar, FALSE, FALSE, 0);
 
-    /* Title + Folder path */
-    GtkWidget *header_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    gtk_box_pack_start(GTK_BOX(top_header), header_vbox, TRUE, TRUE, 0);
+    /* Sidebar Branding Header */
+    GtkWidget *brand_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_style_context_add_class(gtk_widget_get_style_context(brand_box), "sidebar-brand");
+    gtk_box_pack_start(GTK_BOX(sidebar), brand_box, FALSE, FALSE, 0);
 
-    GtkWidget *title_lbl = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(title_lbl), "<b><big>Live Wallpaper Studio</big></b>");
-    gtk_label_set_xalign(GTK_LABEL(title_lbl), 0.0);
-    gtk_box_pack_start(GTK_BOX(header_vbox), title_lbl, FALSE, FALSE, 0);
+    GtkWidget *logo_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start(GTK_BOX(brand_box), logo_hbox, FALSE, FALSE, 0);
 
-    ctx->folder_label = gtk_label_new("📁 <i>No folder loaded</i>");
-    gtk_label_set_use_markup(GTK_LABEL(ctx->folder_label), TRUE);
-    gtk_label_set_xalign(GTK_LABEL(ctx->folder_label), 0.0);
-    GtkStyleContext *fb_sc = gtk_widget_get_style_context(ctx->folder_label);
-    gtk_style_context_add_class(fb_sc, "folder-banner");
-    gtk_box_pack_start(GTK_BOX(header_vbox), ctx->folder_label, FALSE, FALSE, 0);
+    if (app_icon) {
+        GdkPixbuf *small_logo = gdk_pixbuf_scale_simple(app_icon, 28, 28, GDK_INTERP_BILINEAR);
+        if (small_logo) {
+            gtk_box_pack_start(GTK_BOX(logo_hbox), gtk_image_new_from_pixbuf(small_logo), FALSE, FALSE, 0);
+            g_object_unref(small_logo);
+        }
+        g_object_unref(app_icon);
+    } else {
+        gtk_box_pack_start(GTK_BOX(logo_hbox), gtk_image_new_from_icon_name("preferences-desktop-wallpaper", GTK_ICON_SIZE_LARGE_TOOLBAR), FALSE, FALSE, 0);
+    }
 
-    /* Select Folder Button */
-    GtkWidget *choose_folder_btn = gtk_button_new_with_label("Select Folder...");
-    gtk_button_set_image(GTK_BUTTON(choose_folder_btn),
-                         gtk_image_new_from_icon_name("folder-open-symbolic", GTK_ICON_SIZE_BUTTON));
-    gtk_button_set_always_show_image(GTK_BUTTON(choose_folder_btn), TRUE);
-    g_signal_connect(choose_folder_btn, "clicked", G_CALLBACK(on_choose_folder_clicked), ctx);
-    gtk_box_pack_end(GTK_BOX(top_header), choose_folder_btn, FALSE, FALSE, 0);
+    GtkWidget *brand_lbl_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(logo_hbox), brand_lbl_box, TRUE, TRUE, 0);
 
-    /* ── Center Grid Gallery (Scrollable GtkFlowBox) ── */
-    ctx->scrolled_window = gtk_scrolled_window_new(NULL, NULL);
-    GtkStyleContext *scr_sc = gtk_widget_get_style_context(ctx->scrolled_window);
-    gtk_style_context_add_class(scr_sc, "gallery-scroll");
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(ctx->scrolled_window),
-                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    gtk_box_pack_start(GTK_BOX(root_vbox), ctx->scrolled_window, TRUE, TRUE, 0);
+    GtkWidget *brand_title = gtk_label_new("Wallpaper");
+    gtk_style_context_add_class(gtk_widget_get_style_context(brand_title), "sidebar-title");
+    gtk_label_set_xalign(GTK_LABEL(brand_title), 0.0);
+    gtk_box_pack_start(GTK_BOX(brand_lbl_box), brand_title, FALSE, FALSE, 0);
 
-    ctx->flow_box = gtk_flow_box_new();
-    gtk_widget_set_valign(ctx->flow_box, GTK_ALIGN_START);
-    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(ctx->flow_box), 6);
-    gtk_flow_box_set_min_children_per_line(GTK_FLOW_BOX(ctx->flow_box), 2);
-    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(ctx->flow_box), GTK_SELECTION_NONE);
-    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(ctx->flow_box), 10);
-    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(ctx->flow_box), 10);
-    gtk_container_set_border_width(GTK_CONTAINER(ctx->flow_box), 12);
-    gtk_container_add(GTK_CONTAINER(ctx->scrolled_window), ctx->flow_box);
+    GtkWidget *brand_sub = gtk_label_new("Studio for Zorin OS");
+    gtk_style_context_add_class(gtk_widget_get_style_context(brand_sub), "sidebar-subtitle");
+    gtk_label_set_xalign(GTK_LABEL(brand_sub), 0.0);
+    gtk_box_pack_start(GTK_BOX(brand_lbl_box), brand_sub, FALSE, FALSE, 0);
 
-    /* ── Bottom Control Bar ── */
+    /* ── Tab 1 Button: Live Wallpaper ── */
+    ctx->nav_live_btn = gtk_button_new();
+    GtkWidget *live_btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *live_icon = gtk_image_new_from_icon_name("video-display-symbolic", GTK_ICON_SIZE_BUTTON);
+    GtkWidget *live_text = gtk_label_new("Live Wallpapers");
+    gtk_box_pack_start(GTK_BOX(live_btn_box), live_icon, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(live_btn_box), live_text, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(ctx->nav_live_btn), live_btn_box);
+    gtk_style_context_add_class(gtk_widget_get_style_context(ctx->nav_live_btn), "nav-btn");
+    gtk_style_context_add_class(gtk_widget_get_style_context(ctx->nav_live_btn), "active");
+    g_object_set_data(G_OBJECT(ctx->nav_live_btn), "tab", (gpointer)"live");
+    g_signal_connect(ctx->nav_live_btn, "clicked", G_CALLBACK(on_nav_tab_clicked), ctx);
+    gtk_box_pack_start(GTK_BOX(sidebar), ctx->nav_live_btn, FALSE, FALSE, 0);
+
+    /* ── Tab 2 Button: Static Wallpaper ── */
+    ctx->nav_static_btn = gtk_button_new();
+    GtkWidget *static_btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *static_icon = gtk_image_new_from_icon_name("preferences-desktop-wallpaper-symbolic", GTK_ICON_SIZE_BUTTON);
+    GtkWidget *static_text = gtk_label_new("Static Wallpapers");
+    gtk_box_pack_start(GTK_BOX(static_btn_box), static_icon, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(static_btn_box), static_text, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(ctx->nav_static_btn), static_btn_box);
+    gtk_style_context_add_class(gtk_widget_get_style_context(ctx->nav_static_btn), "nav-btn");
+    g_object_set_data(G_OBJECT(ctx->nav_static_btn), "tab", (gpointer)"static");
+    g_signal_connect(ctx->nav_static_btn, "clicked", G_CALLBACK(on_nav_tab_clicked), ctx);
+    gtk_box_pack_start(GTK_BOX(sidebar), ctx->nav_static_btn, FALSE, FALSE, 0);
+
+    /* ═══════════════════════════════════════════════════════════════════════
+     * RIGHT MAIN CONTENT (GtkStack)
+     * ═══════════════════════════════════════════════════════════════════════ */
+    GtkWidget *content_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(root_hbox), content_vbox, TRUE, TRUE, 0);
+
+    ctx->stack = gtk_stack_new();
+    gtk_stack_set_transition_type(GTK_STACK(ctx->stack), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+    gtk_stack_set_transition_duration(GTK_STACK(ctx->stack), 150);
+    gtk_box_pack_start(GTK_BOX(content_vbox), ctx->stack, TRUE, TRUE, 0);
+
+    /* ───────────────────────────────────────────────────────────────────────
+     * Page 1: Live Wallpaper View
+     * ─────────────────────────────────────────────────────────────────────── */
+    GtkWidget *live_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_stack_add_named(GTK_STACK(ctx->stack), live_page, "live");
+
+    /* Live Header Bar */
+    GtkWidget *live_hdr = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_style_context_add_class(gtk_widget_get_style_context(live_hdr), "header-bar");
+    gtk_box_pack_start(GTK_BOX(live_page), live_hdr, FALSE, FALSE, 0);
+
+    ctx->live_grid.folder_label = gtk_label_new("📁 No video folder loaded");
+    gtk_label_set_use_markup(GTK_LABEL(ctx->live_grid.folder_label), TRUE);
+    gtk_label_set_ellipsize(GTK_LABEL(ctx->live_grid.folder_label), PANGO_ELLIPSIZE_MIDDLE);
+    gtk_label_set_xalign(GTK_LABEL(ctx->live_grid.folder_label), 0.0);
+    gtk_box_pack_start(GTK_BOX(live_hdr), ctx->live_grid.folder_label, TRUE, TRUE, 0);
+
+    GtkWidget *live_fldr_btn = gtk_button_new_with_label("Select Folder...");
+    gtk_button_set_image(GTK_BUTTON(live_fldr_btn), gtk_image_new_from_icon_name("folder-open-symbolic", GTK_ICON_SIZE_BUTTON));
+    gtk_button_set_always_show_image(GTK_BUTTON(live_fldr_btn), TRUE);
+    g_signal_connect(live_fldr_btn, "clicked", G_CALLBACK(on_select_video_folder_clicked), ctx);
+    gtk_box_pack_end(GTK_BOX(live_hdr), live_fldr_btn, FALSE, FALSE, 0);
+
+    /* Inner page stack: empty-state ↔ gallery */
+    ctx->live_grid.page_stack = gtk_stack_new();
+    gtk_stack_set_transition_type(GTK_STACK(ctx->live_grid.page_stack), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+    gtk_stack_set_transition_duration(GTK_STACK(ctx->live_grid.page_stack), 180);
+    gtk_box_pack_start(GTK_BOX(live_page), ctx->live_grid.page_stack, TRUE, TRUE, 0);
+
+    /* Empty state */
+    ctx->live_grid.empty_state = create_empty_state(
+        "video-x-generic-symbolic",
+        "No Videos Loaded",
+        "Click 'Select Folder...' above to import a folder\nfull of video wallpapers.");
+    gtk_stack_add_named(GTK_STACK(ctx->live_grid.page_stack), ctx->live_grid.empty_state, "empty");
+
+    /* Gallery scroll */
+    GtkWidget *live_scr = gtk_scrolled_window_new(NULL, NULL);
+    gtk_style_context_add_class(gtk_widget_get_style_context(live_scr), "gallery-scroll");
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(live_scr), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_stack_add_named(GTK_STACK(ctx->live_grid.page_stack), live_scr, "gallery");
+
+    ctx->live_grid.flow_box = gtk_flow_box_new();
+    gtk_widget_set_valign(ctx->live_grid.flow_box, GTK_ALIGN_START);
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(ctx->live_grid.flow_box), 8);
+    gtk_flow_box_set_min_children_per_line(GTK_FLOW_BOX(ctx->live_grid.flow_box), 2);
+    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(ctx->live_grid.flow_box), GTK_SELECTION_NONE);
+    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(ctx->live_grid.flow_box), 8);
+    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(ctx->live_grid.flow_box), 8);
+    gtk_container_set_border_width(GTK_CONTAINER(ctx->live_grid.flow_box), 10);
+    gtk_container_add(GTK_CONTAINER(live_scr), ctx->live_grid.flow_box);
+
+    /* Default: show empty state */
+    gtk_stack_set_visible_child_name(GTK_STACK(ctx->live_grid.page_stack), "empty");
+
+    /* ───────────────────────────────────────────────────────────────────────
+     * Page 2: Static Wallpaper View
+     * ─────────────────────────────────────────────────────────────────────── */
+    GtkWidget *static_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_stack_add_named(GTK_STACK(ctx->stack), static_page, "static");
+
+    /* Static Header Bar */
+    GtkWidget *static_hdr = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_style_context_add_class(gtk_widget_get_style_context(static_hdr), "header-bar");
+    gtk_box_pack_start(GTK_BOX(static_page), static_hdr, FALSE, FALSE, 0);
+
+    ctx->static_grid.folder_label = gtk_label_new("📁 No image folder loaded");
+    gtk_label_set_use_markup(GTK_LABEL(ctx->static_grid.folder_label), TRUE);
+    gtk_label_set_ellipsize(GTK_LABEL(ctx->static_grid.folder_label), PANGO_ELLIPSIZE_MIDDLE);
+    gtk_label_set_xalign(GTK_LABEL(ctx->static_grid.folder_label), 0.0);
+    gtk_box_pack_start(GTK_BOX(static_hdr), ctx->static_grid.folder_label, TRUE, TRUE, 0);
+
+    GtkWidget *static_fldr_btn = gtk_button_new_with_label("Select Folder...");
+    gtk_button_set_image(GTK_BUTTON(static_fldr_btn), gtk_image_new_from_icon_name("folder-open-symbolic", GTK_ICON_SIZE_BUTTON));
+    gtk_button_set_always_show_image(GTK_BUTTON(static_fldr_btn), TRUE);
+    g_signal_connect(static_fldr_btn, "clicked", G_CALLBACK(on_select_image_folder_clicked), ctx);
+    gtk_box_pack_end(GTK_BOX(static_hdr), static_fldr_btn, FALSE, FALSE, 0);
+
+    /* Inner page stack: empty-state ↔ gallery */
+    ctx->static_grid.page_stack = gtk_stack_new();
+    gtk_stack_set_transition_type(GTK_STACK(ctx->static_grid.page_stack), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+    gtk_stack_set_transition_duration(GTK_STACK(ctx->static_grid.page_stack), 180);
+    gtk_box_pack_start(GTK_BOX(static_page), ctx->static_grid.page_stack, TRUE, TRUE, 0);
+
+    /* Empty state */
+    ctx->static_grid.empty_state = create_empty_state(
+        "image-x-generic-symbolic",
+        "No Images Loaded",
+        "Click 'Select Folder...' above to import a folder\nof JPG, PNG, WebP, SVG or GIF images.");
+    gtk_stack_add_named(GTK_STACK(ctx->static_grid.page_stack), ctx->static_grid.empty_state, "empty");
+
+    /* Gallery scroll */
+    GtkWidget *static_scr = gtk_scrolled_window_new(NULL, NULL);
+    gtk_style_context_add_class(gtk_widget_get_style_context(static_scr), "gallery-scroll");
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(static_scr), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_stack_add_named(GTK_STACK(ctx->static_grid.page_stack), static_scr, "gallery");
+
+    ctx->static_grid.flow_box = gtk_flow_box_new();
+    gtk_widget_set_valign(ctx->static_grid.flow_box, GTK_ALIGN_START);
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(ctx->static_grid.flow_box), 8);
+    gtk_flow_box_set_min_children_per_line(GTK_FLOW_BOX(ctx->static_grid.flow_box), 2);
+    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(ctx->static_grid.flow_box), GTK_SELECTION_NONE);
+    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(ctx->static_grid.flow_box), 8);
+    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(ctx->static_grid.flow_box), 8);
+    gtk_container_set_border_width(GTK_CONTAINER(ctx->static_grid.flow_box), 10);
+    gtk_container_add(GTK_CONTAINER(static_scr), ctx->static_grid.flow_box);
+
+    /* Default: show empty state */
+    gtk_stack_set_visible_child_name(GTK_STACK(ctx->static_grid.page_stack), "empty");
+
+    /* ═══════════════════════════════════════════════════════════════════════
+     * SHARED BOTTOM CONTROLS FOOTER
+     * ═══════════════════════════════════════════════════════════════════════ */
     GtkWidget *bottom_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    GtkStyleContext *btm_sc = gtk_widget_get_style_context(bottom_bar);
-    gtk_style_context_add_class(btm_sc, "bottom-bar");
-    gtk_box_pack_end(GTK_BOX(root_vbox), bottom_bar, FALSE, FALSE, 0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(bottom_bar), "footer-bar");
+    gtk_box_pack_end(GTK_BOX(content_vbox), bottom_bar, FALSE, FALSE, 0);
 
-    /* Status Label */
-    ctx->status_label = gtk_label_new("Click any wallpaper to set as desktop background.");
+    ctx->status_label = gtk_label_new("Select a wallpaper to set as desktop background.");
     gtk_label_set_ellipsize(GTK_LABEL(ctx->status_label), PANGO_ELLIPSIZE_END);
     gtk_label_set_xalign(GTK_LABEL(ctx->status_label), 0.0);
     gtk_box_pack_start(GTK_BOX(bottom_bar), ctx->status_label, TRUE, TRUE, 0);
 
-    /* Pause Button */
     ctx->pause_btn = gtk_button_new_with_label("Pause");
-    gtk_button_set_image(GTK_BUTTON(ctx->pause_btn),
-                         gtk_image_new_from_icon_name("media-playback-pause-symbolic", GTK_ICON_SIZE_BUTTON));
+    gtk_button_set_image(GTK_BUTTON(ctx->pause_btn), gtk_image_new_from_icon_name("media-playback-pause-symbolic", GTK_ICON_SIZE_BUTTON));
     gtk_button_set_always_show_image(GTK_BUTTON(ctx->pause_btn), TRUE);
     g_signal_connect(ctx->pause_btn, "clicked", G_CALLBACK(on_pause_toggled), ctx);
     gtk_box_pack_start(GTK_BOX(bottom_bar), ctx->pause_btn, FALSE, FALSE, 0);
 
-    /* Stop Button */
     ctx->stop_btn = gtk_button_new_with_label("Turn Off");
-    gtk_button_set_image(GTK_BUTTON(ctx->stop_btn),
-                         gtk_image_new_from_icon_name("media-playback-stop-symbolic", GTK_ICON_SIZE_BUTTON));
+    gtk_button_set_image(GTK_BUTTON(ctx->stop_btn), gtk_image_new_from_icon_name("media-playback-stop-symbolic", GTK_ICON_SIZE_BUTTON));
     gtk_button_set_always_show_image(GTK_BUTTON(ctx->stop_btn), TRUE);
     g_signal_connect(ctx->stop_btn, "clicked", G_CALLBACK(on_stop_clicked), ctx);
     gtk_box_pack_start(GTK_BOX(bottom_bar), ctx->stop_btn, FALSE, FALSE, 0);
 
-    /* Quit Button */
     GtkWidget *quit_btn = gtk_button_new_with_label("Quit");
-    gtk_button_set_image(GTK_BUTTON(quit_btn),
-                         gtk_image_new_from_icon_name("application-exit-symbolic", GTK_ICON_SIZE_BUTTON));
+    gtk_button_set_image(GTK_BUTTON(quit_btn), gtk_image_new_from_icon_name("application-exit-symbolic", GTK_ICON_SIZE_BUTTON));
     gtk_button_set_always_show_image(GTK_BUTTON(quit_btn), TRUE);
     g_signal_connect(quit_btn, "clicked", G_CALLBACK(on_quit_clicked), ctx);
     gtk_box_pack_start(GTK_BOX(bottom_bar), quit_btn, FALSE, FALSE, 0);
 
     gtk_widget_show_all(ctx->window);
+    /* After show_all, explicitly set both grids to empty state.
+     * populate_*_grid() will switch to "gallery" on the next idle tick.  */
+    gtk_stack_set_visible_child_name(GTK_STACK(ctx->live_grid.page_stack),   "empty");
+    gtk_stack_set_visible_child_name(GTK_STACK(ctx->static_grid.page_stack), "empty");
+
+    /*
+     * Restore previously saved folders AFTER the window is fully realized.
+     *
+     * Why defer with g_idle_add?
+     * GtkStack resets its visible child to the first added child ("empty")
+     * during the realization pass triggered by gtk_widget_show_all(). Any
+     * gtk_stack_set_visible_child_name("gallery") call made BEFORE the stack
+     * is realized is silently lost. By deferring to the first idle slot we
+     * guarantee the stack is fully mapped before we switch pages.
+     */
+    g_idle_add(on_restore_folders_idle, ctx);
+
     return ctx;
 }
 
@@ -730,7 +1169,7 @@ void gui_load_video_and_scan_folder(GuiCtx *ctx, const char *filepath)
 {
     if (!ctx || !filepath || !filepath[0]) return;
     char *dirname = g_path_get_dirname(filepath);
-    start_wallpaper_playback(ctx, filepath);
-    populate_folder_wallpapers(ctx, dirname, filepath);
+    start_live_wallpaper(ctx, filepath);
+    populate_live_grid(ctx, dirname, filepath);
     g_free(dirname);
 }
