@@ -1,5 +1,5 @@
 /*
- * thumbnail.c — Fast video thumbnail generator using FFmpeg and GdkPixbuf.
+ * thumbnail.c — Fast, leak-free video & image thumbnail generator.
  */
 
 #include "thumbnail.h"
@@ -9,28 +9,55 @@
 #include <libavutil/imgutils.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <strings.h>
 
-GdkPixbuf *thumbnail_generate(const char *video_path, int target_w, int target_h)
+static gboolean is_image_ext(const char *path)
 {
-    if (!video_path || !video_path[0] || target_w <= 0 || target_h <= 0) {
+    if (!path) return FALSE;
+    const char *exts[] = { ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".svg", NULL };
+    size_t len = strlen(path);
+    for (int i = 0; exts[i] != NULL; i++) {
+        size_t elen = strlen(exts[i]);
+        if (len >= elen && strcasecmp(path + (len - elen), exts[i]) == 0) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+GdkPixbuf *thumbnail_generate(const char *filepath, int target_w, int target_h)
+{
+    if (!filepath || !filepath[0] || target_w <= 0 || target_h <= 0) {
         return NULL;
     }
 
-    AVFormatContext *fmt_ctx = NULL;
-    AVCodecContext  *codec_ctx = NULL;
-    struct SwsContext *sws_ctx = NULL;
-    AVFrame         *raw_frame = NULL;
-    AVPacket        *pkt = NULL;
-    GdkPixbuf       *pixbuf = NULL;
-    int              v_idx = -1;
+    /* Fast path for static image files */
+    if (is_image_ext(filepath)) {
+        GError *err = NULL;
+        GdkPixbuf *img_pixbuf = gdk_pixbuf_new_from_file_at_scale(filepath, target_w, target_h, TRUE, &err);
+        if (img_pixbuf) {
+            return img_pixbuf;
+        }
+        if (err) g_error_free(err);
+        /* Fall back to FFmpeg if GdkPixbuf failed to load (e.g. specialized format) */
+    }
 
-    if (avformat_open_input(&fmt_ctx, video_path, NULL, NULL) < 0) {
+    /* Video frame extraction via FFmpeg */
+    AVFormatContext   *fmt_ctx   = NULL;
+    AVCodecContext    *codec_ctx = NULL;
+    struct SwsContext *sws_ctx   = NULL;
+    AVFrame           *raw_frame = NULL;
+    AVPacket          *pkt       = NULL;
+    GdkPixbuf         *pixbuf    = NULL;
+    int                v_idx     = -1;
+
+    if (avformat_open_input(&fmt_ctx, filepath, NULL, NULL) < 0) {
         return NULL;
     }
 
     if (avformat_find_stream_info(fmt_ctx, NULL) < 0) {
-        avformat_close_input(&fmt_ctx);
-        return NULL;
+        goto cleanup;
     }
 
     for (unsigned i = 0; i < fmt_ctx->nb_streams; i++) {
@@ -40,35 +67,24 @@ GdkPixbuf *thumbnail_generate(const char *video_path, int target_w, int target_h
         }
     }
 
-    if (v_idx < 0) {
-        avformat_close_input(&fmt_ctx);
-        return NULL;
-    }
+    if (v_idx < 0) goto cleanup;
 
     AVCodecParameters *codecpar = fmt_ctx->streams[v_idx]->codecpar;
     const AVCodec *codec = avcodec_find_decoder(codecpar->codec_id);
-    if (!codec) {
-        avformat_close_input(&fmt_ctx);
-        return NULL;
-    }
+    if (!codec) goto cleanup;
 
     codec_ctx = avcodec_alloc_context3(codec);
-    if (!codec_ctx) {
-        avformat_close_input(&fmt_ctx);
-        return NULL;
-    }
+    if (!codec_ctx) goto cleanup;
 
     if (avcodec_parameters_to_context(codec_ctx, codecpar) < 0 ||
         avcodec_open2(codec_ctx, codec, NULL) < 0) {
-        avcodec_free_context(&codec_ctx);
-        avformat_close_input(&fmt_ctx);
-        return NULL;
+        goto cleanup;
     }
 
-    /* Seek slightly forward (e.g. 1 second or 10% of duration) to avoid pure black starting frames */
+    /* Seek slightly into the video (5%) to avoid black initial frames */
     int64_t target_ts = 0;
     if (fmt_ctx->streams[v_idx]->duration > 0) {
-        target_ts = fmt_ctx->streams[v_idx]->duration / 20; /* 5% */
+        target_ts = fmt_ctx->streams[v_idx]->duration / 20;
     } else if (fmt_ctx->duration > 0) {
         target_ts = (fmt_ctx->duration / AV_TIME_BASE) / 20;
     }
@@ -78,18 +94,10 @@ GdkPixbuf *thumbnail_generate(const char *video_path, int target_w, int target_h
 
     raw_frame = av_frame_alloc();
     pkt = av_packet_alloc();
+    if (!raw_frame || !pkt) goto cleanup;
 
-    if (!raw_frame || !pkt) {
-        if (raw_frame) av_frame_free(&raw_frame);
-        if (pkt) av_packet_free(&pkt);
-        avcodec_free_context(&codec_ctx);
-        avformat_close_input(&fmt_ctx);
-        return NULL;
-    }
-
-    /* Decode until we get 1 valid frame */
     int frame_decoded = 0;
-    int max_attempts = 120;
+    int max_attempts = 100;
 
     while (max_attempts-- > 0 && av_read_frame(fmt_ctx, pkt) >= 0) {
         if (pkt->stream_index == v_idx) {
@@ -105,7 +113,6 @@ GdkPixbuf *thumbnail_generate(const char *video_path, int target_w, int target_h
     }
 
     if (frame_decoded) {
-        /* Allocate RGB24 pixbuf */
         pixbuf = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, target_w, target_h);
         if (pixbuf) {
             uint8_t *pixels = gdk_pixbuf_get_pixels(pixbuf);
@@ -134,10 +141,11 @@ GdkPixbuf *thumbnail_generate(const char *video_path, int target_w, int target_h
         }
     }
 
-    av_frame_free(&raw_frame);
-    av_packet_free(&pkt);
-    avcodec_free_context(&codec_ctx);
-    avformat_close_input(&fmt_ctx);
+cleanup:
+    if (raw_frame) av_frame_free(&raw_frame);
+    if (pkt) av_packet_free(&pkt);
+    if (codec_ctx) avcodec_free_context(&codec_ctx);
+    if (fmt_ctx) avformat_close_input(&fmt_ctx);
 
     return pixbuf;
 }

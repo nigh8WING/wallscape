@@ -1,10 +1,10 @@
 [Desktop Entry]
-Name=Live Wallpaper
-Comment=Hardware accelerated video desktop wallpaper for Zorin OS / GNOME
+Name=Wallpaper Studio
+Comment=Live video & static wallpaper studio for Zorin OS / GNOME
 Exec=live-wallpaper
-Icon=preferences-desktop-wallpaper
+Icon=live-wallpaper
 Terminal=false
 Type=Application
-Categories=Utility;Graphics;
+Categories=Utility;Graphics;Settings;
 X-GNOME-Autostart-enabled=true
 StartupNotify=false

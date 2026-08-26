@@ -1,0 +1,110 @@
+/*
+ * static_wallpaper.c — Native GNOME Desktop Background (Static Wallpaper) manager.
+ *
+ * Uses GLib's GSettings API to interface with org.gnome.desktop.background.
+ * Ensures strict resource cleanup (g_object_unref, g_free) with zero memory leaks.
+ */
+
+#include "static_wallpaper.h"
+#include <gio/gio.h>
+#include <stdio.h>
+#include <string.h>
+#include <strings.h>
+
+static const char *const STATIC_EXTS[] = {
+    ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".svg", ".gif", NULL
+};
+
+bool static_wallpaper_is_supported(const char *filename)
+{
+    if (!filename) return false;
+    size_t name_len = strlen(filename);
+
+    for (int i = 0; STATIC_EXTS[i] != NULL; i++) {
+        size_t ext_len = strlen(STATIC_EXTS[i]);
+        if (name_len >= ext_len) {
+            if (strcasecmp(filename + (name_len - ext_len), STATIC_EXTS[i]) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool static_wallpaper_apply(const char *image_path)
+{
+    if (!image_path || !image_path[0]) return false;
+
+    GSettingsSchemaSource *source = g_settings_schema_source_get_default();
+    if (!source) return false;
+
+    GSettingsSchema *schema = g_settings_schema_source_lookup(source, "org.gnome.desktop.background", TRUE);
+    if (!schema) {
+        fprintf(stderr, "[static_wallpaper] Schema org.gnome.desktop.background not found\n");
+        return false;
+    }
+    g_settings_schema_unref(schema);
+
+    GSettings *settings = g_settings_new("org.gnome.desktop.background");
+    if (!settings) return false;
+
+    /* Build file:// URI */
+    char *uri = NULL;
+    if (strncmp(image_path, "file://", 7) == 0) {
+        uri = g_strdup(image_path);
+    } else {
+        uri = g_filename_to_uri(image_path, NULL, NULL);
+    }
+
+    if (!uri) {
+        g_object_unref(settings);
+        return false;
+    }
+
+    /* Set for both Light and Dark GNOME modes */
+    g_settings_set_string(settings, "picture-uri", uri);
+    g_settings_set_string(settings, "picture-uri-dark", uri);
+    g_settings_set_string(settings, "picture-options", "zoom");
+    g_settings_sync();
+
+    g_free(uri);
+    g_object_unref(settings);
+
+    fprintf(stderr, "[static_wallpaper] Applied static wallpaper: %s\n", image_path);
+    return true;
+}
+
+bool static_wallpaper_get_current(char *out_path, int max_len)
+{
+    if (!out_path || max_len <= 0) return false;
+
+    GSettingsSchemaSource *source = g_settings_schema_source_get_default();
+    if (!source) return false;
+
+    GSettingsSchema *schema = g_settings_schema_source_lookup(source, "org.gnome.desktop.background", TRUE);
+    if (!schema) return false;
+    g_settings_schema_unref(schema);
+
+    GSettings *settings = g_settings_new("org.gnome.desktop.background");
+    if (!settings) return false;
+
+    char *uri = g_settings_get_string(settings, "picture-uri");
+    if (!uri || !uri[0]) {
+        if (uri) g_free(uri);
+        uri = g_settings_get_string(settings, "picture-uri-dark");
+    }
+
+    bool success = false;
+    if (uri && uri[0]) {
+        char *filename = g_filename_from_uri(uri, NULL, NULL);
+        if (filename) {
+            snprintf(out_path, (size_t)max_len, "%s", filename);
+            g_free(filename);
+            success = true;
+        }
+    }
+
+    if (uri) g_free(uri);
+    g_object_unref(settings);
+    return success;
+}

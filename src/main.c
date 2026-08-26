@@ -72,10 +72,11 @@ static void setup_display_environment(void)
                       (session_type != NULL && strcmp(session_type, "wayland") == 0);
 
     if (is_wayland) {
-        fprintf(stderr, "[main] Wayland session detected. Enabling XWayland compatibility mode...\n");
-        /* Force X11 backend for SDL2 and GTK to enable _NET_WM_WINDOW_TYPE_DESKTOP via XWayland */
+        fprintf(stderr, "[main] Wayland session detected. Enabling XWayland compatibility for wallpaper...\n");
+        /* Force X11 backend ONLY for SDL2 so the wallpaper surface can use X11 root desktop layering.
+         * GTK uses native Wayland backend so GUI window actions (minimize, restore) are fully isolated
+         * and cannot affect other application windows. */
         setenv("SDL_VIDEODRIVER", "x11", 1);
-        setenv("GDK_BACKEND", "x11", 1);
     } else {
         fprintf(stderr, "[main] Native X11 session detected.\n");
     }
@@ -165,14 +166,9 @@ int main(int argc, char *argv[])
     }
     g_gui = gui;
 
-    /* Determine initial video to play */
-    if (initial_video[0] == '\0') {
-        config_load(initial_video, sizeof(initial_video));
-    }
-
-    /* If a valid video file is found, start playback and scan its folder */
+    /* If an explicit video file was passed via CLI, start it */
     if (initial_video[0] != '\0' && access(initial_video, R_OK) == 0) {
-        fprintf(stderr, "[main] Autoloading video and folder: %s\n", initial_video);
+        fprintf(stderr, "[main] Starting requested video: %s\n", initial_video);
         gui_load_video_and_scan_folder(gui, initial_video);
     } else {
         wallpaper_hide(wallpaper);
