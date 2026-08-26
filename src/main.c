@@ -170,26 +170,10 @@ int main(int argc, char *argv[])
         config_load(initial_video, sizeof(initial_video));
     }
 
-    /* If a valid video file is found, start playback immediately */
+    /* If a valid video file is found, start playback and scan its folder */
     if (initial_video[0] != '\0' && access(initial_video, R_OK) == 0) {
-        fprintf(stderr, "[main] Autoloading video: %s\n", initial_video);
-        if (decoder_start(&state, initial_video) == 0) {
-            /* Wait for dimensions */
-            for (int i = 0; i < 50 && (state.video_width <= 0); i++) {
-                g_usleep(10000);
-            }
-            if (state.video_width > 0 && state.video_height > 0) {
-                wallpaper_set_video_size(wallpaper, state.video_width, state.video_height);
-            }
-            wallpaper_show(wallpaper);
-            gui_start_render_timer(gui);
-
-            char status_buf[LW_MAX_PATH + 32];
-            snprintf(status_buf, sizeof(status_buf), "Playing:\n%s", initial_video);
-            gui_set_status(gui, status_buf);
-        } else {
-            fprintf(stderr, "[main] Failed to load initial video '%s'\n", initial_video);
-        }
+        fprintf(stderr, "[main] Autoloading video and folder: %s\n", initial_video);
+        gui_load_video_and_scan_folder(gui, initial_video);
     } else {
         wallpaper_hide(wallpaper);
     }
