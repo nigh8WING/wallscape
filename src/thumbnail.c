@@ -1,0 +1,143 @@
+/*
+ * thumbnail.c — Fast video thumbnail generator using FFmpeg and GdkPixbuf.
+ */
+
+#include "thumbnail.h"
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libswscale/swscale.h>
+#include <libavutil/imgutils.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+GdkPixbuf *thumbnail_generate(const char *video_path, int target_w, int target_h)
+{
+    if (!video_path || !video_path[0] || target_w <= 0 || target_h <= 0) {
+        return NULL;
+    }
+
+    AVFormatContext *fmt_ctx = NULL;
+    AVCodecContext  *codec_ctx = NULL;
+    struct SwsContext *sws_ctx = NULL;
+    AVFrame         *raw_frame = NULL;
+    AVPacket        *pkt = NULL;
+    GdkPixbuf       *pixbuf = NULL;
+    int              v_idx = -1;
+
+    if (avformat_open_input(&fmt_ctx, video_path, NULL, NULL) < 0) {
+        return NULL;
+    }
+
+    if (avformat_find_stream_info(fmt_ctx, NULL) < 0) {
+        avformat_close_input(&fmt_ctx);
+        return NULL;
+    }
+
+    for (unsigned i = 0; i < fmt_ctx->nb_streams; i++) {
+        if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            v_idx = (int)i;
+            break;
+        }
+    }
+
+    if (v_idx < 0) {
+        avformat_close_input(&fmt_ctx);
+        return NULL;
+    }
+
+    AVCodecParameters *codecpar = fmt_ctx->streams[v_idx]->codecpar;
+    const AVCodec *codec = avcodec_find_decoder(codecpar->codec_id);
+    if (!codec) {
+        avformat_close_input(&fmt_ctx);
+        return NULL;
+    }
+
+    codec_ctx = avcodec_alloc_context3(codec);
+    if (!codec_ctx) {
+        avformat_close_input(&fmt_ctx);
+        return NULL;
+    }
+
+    if (avcodec_parameters_to_context(codec_ctx, codecpar) < 0 ||
+        avcodec_open2(codec_ctx, codec, NULL) < 0) {
+        avcodec_free_context(&codec_ctx);
+        avformat_close_input(&fmt_ctx);
+        return NULL;
+    }
+
+    /* Seek slightly forward (e.g. 1 second or 10% of duration) to avoid pure black starting frames */
+    int64_t target_ts = 0;
+    if (fmt_ctx->streams[v_idx]->duration > 0) {
+        target_ts = fmt_ctx->streams[v_idx]->duration / 20; /* 5% */
+    } else if (fmt_ctx->duration > 0) {
+        target_ts = (fmt_ctx->duration / AV_TIME_BASE) / 20;
+    }
+    if (target_ts > 0) {
+        av_seek_frame(fmt_ctx, v_idx, target_ts, AVSEEK_FLAG_BACKWARD);
+    }
+
+    raw_frame = av_frame_alloc();
+    pkt = av_packet_alloc();
+
+    if (!raw_frame || !pkt) {
+        if (raw_frame) av_frame_free(&raw_frame);
+        if (pkt) av_packet_free(&pkt);
+        avcodec_free_context(&codec_ctx);
+        avformat_close_input(&fmt_ctx);
+        return NULL;
+    }
+
+    /* Decode until we get 1 valid frame */
+    int frame_decoded = 0;
+    int max_attempts = 120;
+
+    while (max_attempts-- > 0 && av_read_frame(fmt_ctx, pkt) >= 0) {
+        if (pkt->stream_index == v_idx) {
+            if (avcodec_send_packet(codec_ctx, pkt) >= 0) {
+                if (avcodec_receive_frame(codec_ctx, raw_frame) == 0) {
+                    frame_decoded = 1;
+                    av_packet_unref(pkt);
+                    break;
+                }
+            }
+        }
+        av_packet_unref(pkt);
+    }
+
+    if (frame_decoded) {
+        /* Allocate RGB24 pixbuf */
+        pixbuf = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, target_w, target_h);
+        if (pixbuf) {
+            uint8_t *pixels = gdk_pixbuf_get_pixels(pixbuf);
+            int rowstride   = gdk_pixbuf_get_rowstride(pixbuf);
+
+            sws_ctx = sws_getContext(
+                codec_ctx->width, codec_ctx->height, codec_ctx->pix_fmt,
+                target_w, target_h, AV_PIX_FMT_RGB24,
+                SWS_BILINEAR, NULL, NULL, NULL);
+
+            if (sws_ctx) {
+                uint8_t *dst_data[4] = { pixels, NULL, NULL, NULL };
+                int dst_linesize[4]  = { rowstride, 0, 0, 0 };
+
+                sws_scale(sws_ctx,
+                          (const uint8_t *const *)raw_frame->data,
+                          raw_frame->linesize,
+                          0, codec_ctx->height,
+                          dst_data, dst_linesize);
+
+                sws_freeContext(sws_ctx);
+            } else {
+                g_object_unref(pixbuf);
+                pixbuf = NULL;
+            }
+        }
+    }
+
+    av_frame_free(&raw_frame);
+    av_packet_free(&pkt);
+    avcodec_free_context(&codec_ctx);
+    avformat_close_input(&fmt_ctx);
+
+    return pixbuf;
+}

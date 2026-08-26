@@ -26,6 +26,7 @@ set(SOURCES
     src/config.c
     src/decoder.c
     src/wallpaper.c
+    src/thumbnail.c
     src/gui.c
 )
 

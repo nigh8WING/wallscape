@@ -1,16 +1,13 @@
 /*
- * gui.h — GTK3 control panel interface for live-wallpaper.
+ * gui.h — GTK3 control panel & wallpaper selector interface for live-wallpaper.
  *
- * Provides a small window (~400×300) with controls:
- *   - Choose Video (file picker with .mp4/.mkv/.webm filter)
- *   - Pause / Resume toggle
- *   - Stop (hides wallpaper)
- *   - Quit
- *   - Status label showing the current video path
- *
- * The GUI also hosts the render timer (g_timeout_add at ~16ms = 60fps)
- * that drives SDL rendering from the GTK main loop, ensuring all SDL
- * calls happen on the main thread.
+ * Provides a dedicated gallery & control panel window:
+ *   - Displays all video wallpapers found in the current folder in a selectable list
+ *   - Highlights the currently active wallpaper
+ *   - Allows selecting/switching wallpapers instantly with a single click
+ *   - Choose Video & Choose Folder buttons
+ *   - Playback controls: Pause / Resume, Stop, Quit
+ *   - Drives SDL2 rendering (~60fps) on the main GTK loop
  */
 
 #ifndef LIVE_WALLPAPER_GUI_H
@@ -23,8 +20,7 @@
 typedef struct GuiCtx GuiCtx;
 
 /*
- * Create the GTK3 control panel window.
- * Takes references to the shared app state and wallpaper context.
+ * Create the GTK3 control panel and wallpaper selector window.
  * Returns NULL on failure.
  */
 GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper);
@@ -41,19 +37,22 @@ void gui_show(GuiCtx *ctx);
 
 /*
  * Start the render timer (~60fps) that drives SDL rendering.
- * Call this after a video has been loaded and the wallpaper texture is ready.
  */
 void gui_start_render_timer(GuiCtx *ctx);
 
 /*
  * Stop the render timer.
- * Call this when playback is stopped or the app is shutting down.
  */
 void gui_stop_render_timer(GuiCtx *ctx);
 
 /*
- * Update the status label text (e.g., show current file path).
+ * Update the status label text.
  */
 void gui_set_status(GuiCtx *ctx, const char *text);
+
+/*
+ * Load a video file and automatically scan its parent folder to populate the wallpaper list.
+ */
+void gui_load_video_and_scan_folder(GuiCtx *ctx, const char *filepath);
 
 #endif /* LIVE_WALLPAPER_GUI_H */
