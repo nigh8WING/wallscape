@@ -94,14 +94,14 @@ static bool config_save_key(const char *key, const char *value)
     if (!get_config_path(filepath, sizeof(filepath))) return false;
 
     /* Read existing lines */
-    char lines[16][LW_MAX_PATH + 64];
+    char lines[64][LW_MAX_PATH + 64];
     int count = 0;
     size_t keylen = strlen(key);
     bool updated = false;
 
     FILE *fp = fopen(filepath, "r");
     if (fp) {
-        while (count < 16 && fgets(lines[count], (int)sizeof(lines[count]), fp)) {
+        while (count < 64 && fgets(lines[count], (int)sizeof(lines[count]), fp)) {
             size_t len = strlen(lines[count]);
             while (len > 0 && (lines[count][len - 1] == '\n' || lines[count][len - 1] == '\r'))
                 lines[count][--len] = '\0';
@@ -115,7 +115,7 @@ static bool config_save_key(const char *key, const char *value)
         fclose(fp);
     }
 
-    if (!updated && count < 16) {
+    if (!updated && count < 64) {
         snprintf(lines[count], sizeof(lines[count]), "%s%s", key, value);
         count++;
     }

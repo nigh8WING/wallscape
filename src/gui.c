@@ -251,14 +251,9 @@ static void start_live_wallpaper(GuiCtx *ctx, const char *filepath)
         return;
     }
 
-    for (int i = 0; i < 50 && (ctx->state->video_width <= 0); i++) {
-        g_usleep(10000);
-    }
-
-    if (ctx->state->video_width > 0 && ctx->state->video_height > 0) {
-        wallpaper_set_video_size(ctx->wallpaper, ctx->state->video_width, ctx->state->video_height);
-    }
-
+    /* wallpaper_render_frame() auto-sizes the texture on the very first frame,
+     * so we can show the window and start the render timer immediately without
+     * polling for video_width/height (which would block the GTK main thread). */
     wallpaper_show(ctx->wallpaper);
     gui_start_render_timer(ctx);
 
@@ -275,11 +270,7 @@ static void start_live_wallpaper(GuiCtx *ctx, const char *filepath)
     }
 
     char *base = g_path_get_basename(filepath);
-    char buf[512];
-    snprintf(buf, sizeof(buf), "🎬 Live Wallpaper: %s (%dx%d @ %.0ffps)",
-             base, ctx->state->video_width, ctx->state->video_height,
-             ctx->state->video_fps > 0 ? ctx->state->video_fps : 30.0);
-    gui_set_status(ctx, buf);
+    gui_set_status(ctx, "🎬 Loading live wallpaper…");
     g_free(base);
 }
 
@@ -306,8 +297,13 @@ static void apply_static_wallpaper(GuiCtx *ctx, const char *filepath)
 {
     if (!filepath || !filepath[0]) return;
 
-    /* Stop video surface so native GNOME background shows */
-    stop_live_wallpaper(ctx);
+    /* Stop the video decoder and hide the surface directly — without going
+     * through the confirmation-dialog path of stop_live_wallpaper(), since
+     * the user already confirmed the static wallpaper action. (UX-3) */
+    gui_stop_render_timer(ctx);
+    decoder_stop(ctx->state);
+    wallpaper_hide(ctx->wallpaper);
+    update_grid_visuals(&ctx->live_grid, -1);
 
     if (static_wallpaper_apply(filepath)) {
         snprintf(ctx->active_static_path, sizeof(ctx->active_static_path), "%s", filepath);
@@ -403,6 +399,7 @@ static void on_static_card_clicked(GtkButton *button, gpointer user_data)
                            "Reset desktop background?", "Clear")) {
             ctx->active_static_path[0] = '\0';
             update_grid_visuals(&ctx->static_grid, -1);
+            static_wallpaper_clear();
             gui_set_status(ctx, "Static wallpaper cleared.");
         }
     } else {
@@ -431,6 +428,10 @@ static void populate_live_grid(GuiCtx *ctx, const char *folder, const char *acti
 
     ctx->live_grid.count = 0;
     ctx->live_grid.active_idx = -1;
+    /* MEM-3: zero stale widget pointers so update_grid_visuals never dereferences freed widgets */
+    memset(ctx->live_grid.card_widgets,  0, sizeof(ctx->live_grid.card_widgets));
+    memset(ctx->live_grid.badge_widgets, 0, sizeof(ctx->live_grid.badge_widgets));
+    memset(ctx->live_grid.title_widgets, 0, sizeof(ctx->live_grid.title_widgets));
     snprintf(ctx->live_grid.folder_path, sizeof(ctx->live_grid.folder_path), "%s", folder);
 
     /* Persist this folder so we can restore it next launch */
@@ -461,9 +462,12 @@ static void populate_live_grid(GuiCtx *ctx, const char *folder, const char *acti
     filenames = g_list_sort(filenames, (GCompareFunc)g_strcmp0);
 
     guint total = g_list_length(filenames);
-    char hdr[LW_MAX_PATH + 64];
-    snprintf(hdr, sizeof(hdr), "📁 <b>Video Folder:</b> %s  <span alpha='60%%'>(%u videos)</span>", folder, total);
+    char *folder_base = g_path_get_basename(folder);
+    char hdr[512];
+    snprintf(hdr, sizeof(hdr), "📁 <b>%s</b>  <span alpha='60%%'>(%u videos)</span>", folder_base, total);
     gtk_label_set_markup(GTK_LABEL(ctx->live_grid.folder_label), hdr);
+    gtk_widget_set_tooltip_text(ctx->live_grid.folder_label, folder);
+    g_free(folder_base);
 
     if (total == 0) {
         g_list_free_full(filenames, g_free);
@@ -560,6 +564,10 @@ static void populate_static_grid(GuiCtx *ctx, const char *folder, const char *ac
 
     ctx->static_grid.count = 0;
     ctx->static_grid.active_idx = -1;
+    /* MEM-3: zero stale widget pointers so update_grid_visuals never dereferences freed widgets */
+    memset(ctx->static_grid.card_widgets,  0, sizeof(ctx->static_grid.card_widgets));
+    memset(ctx->static_grid.badge_widgets, 0, sizeof(ctx->static_grid.badge_widgets));
+    memset(ctx->static_grid.title_widgets, 0, sizeof(ctx->static_grid.title_widgets));
     snprintf(ctx->static_grid.folder_path, sizeof(ctx->static_grid.folder_path), "%s", folder);
 
     /* Persist this folder so we can restore it next launch */
@@ -584,9 +592,12 @@ static void populate_static_grid(GuiCtx *ctx, const char *folder, const char *ac
     filenames = g_list_sort(filenames, (GCompareFunc)g_strcmp0);
 
     guint total = g_list_length(filenames);
-    char hdr[LW_MAX_PATH + 64];
-    snprintf(hdr, sizeof(hdr), "📁 <b>Image Folder:</b> %s  <span alpha='60%%'>(%u images)</span>", folder, total);
+    char *folder_base = g_path_get_basename(folder);
+    char hdr[512];
+    snprintf(hdr, sizeof(hdr), "📁 <b>%s</b>  <span alpha='60%%'>(%u images)</span>", folder_base, total);
     gtk_label_set_markup(GTK_LABEL(ctx->static_grid.folder_label), hdr);
+    gtk_widget_set_tooltip_text(ctx->static_grid.folder_label, folder);
+    g_free(folder_base);
 
     if (total == 0) {
         g_list_free_full(filenames, g_free);
@@ -782,11 +793,14 @@ static void on_quit_clicked(GtkButton *button, gpointer user_data)
 
 static gboolean on_window_delete_event(GtkWidget *widget, GdkEvent *event, gpointer user_data)
 {
-    (void)widget;
     (void)event;
     (void)user_data;
-    gtk_main_quit();
-    return FALSE;
+    /* UX-5: Hide the control panel rather than quitting.
+     * The live wallpaper keeps playing in the background.
+     * Users can re-show the panel by re-launching the binary,
+     * and quit explicitly via the "Quit" button. */
+    gtk_widget_hide(widget);
+    return TRUE;  /* TRUE = don't destroy the window */
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -803,6 +817,24 @@ static gboolean on_render_tick(gpointer user_data)
 
     if (atomic_load(&ctx->state->quit)) {
         return G_SOURCE_REMOVE;
+    }
+
+    /* UX-4: Once the decoder signals ready, update the status bar with accurate
+     * video metadata.  We do this here (on the GTK thread) to avoid any race. */
+    if (atomic_load(&ctx->state->decoder_ready)) {
+        /* Check if status still shows the loading placeholder */
+        const char *cur = gtk_label_get_text(GTK_LABEL(ctx->status_label));
+        if (cur && strstr(cur, "Loading live wallpaper")) {
+            int w = atomic_load(&ctx->state->video_width);
+            int h = atomic_load(&ctx->state->video_height);
+            double fps = ctx->state->video_fps;
+            char *base = g_path_get_basename(ctx->state->video_path);
+            char buf[512];
+            snprintf(buf, sizeof(buf), "🎬 Live Wallpaper: %s (%dx%d @ %.0ffps)",
+                     base, w, h, fps > 0 ? fps : 30.0);
+            gui_set_status(ctx, buf);
+            g_free(base);
+        }
     }
 
     if (!atomic_load(&ctx->state->paused) && atomic_load(&ctx->state->playing)) {
@@ -867,17 +899,33 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
     gtk_window_set_default_size(GTK_WINDOW(ctx->window), 780, 520);
     gtk_window_set_position(GTK_WINDOW(ctx->window), GTK_WIN_POS_CENTER);
 
-    /* Set Application SVG Icon */
-    GError *err = NULL;
-    GdkPixbuf *app_icon = gdk_pixbuf_new_from_file("assets/live-wallpaper.svg", &err);
+    /* Set Application Icon — MEM-2: Use the icon theme (works after install and
+     * during development if the icon is installed in the hicolor theme).
+     * Fall back to a generic wallpaper icon if not found. */
+    GtkIconTheme *icon_theme = gtk_icon_theme_get_default();
+    GdkPixbuf *app_icon = gtk_icon_theme_load_icon(icon_theme, "live-wallpaper",
+                                                    64, GTK_ICON_LOOKUP_USE_BUILTIN, NULL);
+    if (!app_icon) {
+        /* Development fallback: try the local assets/ path relative to CWD */
+        GError *err = NULL;
+        app_icon = gdk_pixbuf_new_from_file("assets/live-wallpaper.svg", &err);
+        if (err) g_error_free(err);
+    }
     if (app_icon) {
         gtk_window_set_icon(GTK_WINDOW(ctx->window), app_icon);
-    } else {
-        if (err) g_error_free(err);
     }
 
     gtk_style_context_add_class(gtk_widget_get_style_context(ctx->window), "studio-window");
     g_signal_connect(ctx->window, "delete-event", G_CALLBACK(on_window_delete_event), ctx);
+
+    /* UX-6: Keyboard accelerators ─────────────────────────────────────────── */
+    GtkAccelGroup *accel_group = gtk_accel_group_new();
+    gtk_window_add_accel_group(GTK_WINDOW(ctx->window), accel_group);
+    /* Ctrl+Q → Quit */
+    gtk_accel_group_connect(accel_group,
+        GDK_KEY_q, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE,
+        g_cclosure_new(G_CALLBACK(on_quit_clicked), ctx, NULL));
+    g_object_unref(accel_group);
 
     /* Root Horizontal Box: Sidebar (Left) + Main Content (Right) */
     GtkWidget *root_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);

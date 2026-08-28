@@ -62,12 +62,30 @@ static void sleep_seconds(double seconds)
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+ * AVIOInterruptCB callback — returns 1 to abort blocking FFmpeg I/O when the
+ * application is shutting down.  This prevents pthread_join() from hanging
+ * while av_read_frame() blocks on a slow filesystem or network stream.
+ * ──────────────────────────────────────────────────────────────────────────── */
+static int interrupt_callback(void *opaque)
+{
+    AppState *state = (AppState *)opaque;
+    return atomic_load(&state->quit) ? 1 : 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
  * Open the video file and initialize all FFmpeg contexts.
  * Returns 0 on success, -1 on failure.
  * ──────────────────────────────────────────────────────────────────────────── */
 static int decoder_ctx_open(DecoderCtx *d, AppState *state, const char *filepath)
 {
     memset(d, 0, sizeof(*d));
+
+    /* Pre-allocate the format context so we can register the interrupt
+     * callback BEFORE avformat_open_input() performs any blocking I/O. */
+    d->fmt_ctx = avformat_alloc_context();
+    if (!d->fmt_ctx) return -1;
+    d->fmt_ctx->interrupt_callback.callback = interrupt_callback;
+    d->fmt_ctx->interrupt_callback.opaque   = state;
 
     /* Open input file */
     int ret = avformat_open_input(&d->fmt_ctx, filepath, NULL, NULL);
@@ -126,12 +144,13 @@ static int decoder_ctx_open(DecoderCtx *d, AppState *state, const char *filepath
     /* Initialize the software scaler: source format → YUV420P
      *
      * Even if the source is already YUV420P, sws_scale handles the copy
-     * and any necessary stride alignment.  Using SWS_BILINEAR for quality
-     * when scaling is needed (rare for wallpaper use). */
+     * and any necessary stride alignment.  SWS_FAST_BILINEAR is used as
+     * we are doing a same-size format conversion (no resize), so quality
+     * is equivalent to SWS_BILINEAR but with better throughput. */
     d->sws_ctx = sws_getContext(
         w, h, d->codec_ctx->pix_fmt,   /* source */
         w, h, AV_PIX_FMT_YUV420P,      /* destination */
-        SWS_BILINEAR, NULL, NULL, NULL);
+        SWS_FAST_BILINEAR, NULL, NULL, NULL);
     if (!d->sws_ctx) {
         fprintf(stderr, "[decoder] failed to create swscale context\n");
         return -1;
@@ -165,12 +184,16 @@ static int decoder_ctx_open(DecoderCtx *d, AppState *state, const char *filepath
     }
     d->frame_delay = 1.0 / state->video_fps;
 
-    /* Store video dimensions in app state */
-    state->video_width  = w;
-    state->video_height = h;
+    /* Store video dimensions in app state (atomic to prevent race with GUI thread) */
+    atomic_store(&state->video_width,  w);
+    atomic_store(&state->video_height, h);
 
     fprintf(stderr, "[decoder] opened '%s': %dx%d @ %.2f fps, codec=%s\n",
             filepath, w, h, state->video_fps, codec->name);
+
+    /* Signal the main thread that metadata is ready.
+     * Set this LAST, after video_width/height/fps are all populated. */
+    atomic_store(&state->decoder_ready, true);
 
     return 0;
 }
@@ -326,14 +349,40 @@ static void *decoder_thread_func(void *arg)
             continue;
         }
 
-        /* ── Send packet to decoder ── */
-        ret = avcodec_send_packet(d.codec_ctx, pkt);
-        av_packet_unref(pkt);
-
-        if (ret < 0) {
-            /* EAGAIN means the decoder is full — try receiving first */
-            if (ret != AVERROR(EAGAIN)) {
+        /* ── Send packet to decoder ──
+         * avcodec_send_packet() returns EAGAIN when the codec's internal buffer
+         * is full and must be drained first.  We do NOT unref the packet until
+         * we have successfully sent it. */
+        while (!atomic_load(&state->quit)) {
+            ret = avcodec_send_packet(d.codec_ctx, pkt);
+            if (ret == 0) {
+                /* Packet accepted — release it */
+                av_packet_unref(pkt);
+                break;
+            } else if (ret == AVERROR(EAGAIN)) {
+                /* Decoder full — drain one frame then retry */
+                ret = avcodec_receive_frame(d.codec_ctx, d.frame_raw);
+                if (ret < 0) {
+                    av_packet_unref(pkt);
+                    break;
+                }
+                /* Process the drained frame inline (same as the receive loop below) */
+                sws_scale(d.sws_ctx,
+                          (const uint8_t *const *)d.frame_raw->data,
+                          d.frame_raw->linesize,
+                          0, d.codec_ctx->height,
+                          d.frame_yuv->data, d.frame_yuv->linesize);
+                frame_queue_push(&state->queue,
+                                 d.frame_yuv->data[0], d.frame_yuv->linesize[0],
+                                 d.frame_yuv->data[1], d.frame_yuv->data[2],
+                                 d.frame_yuv->linesize[1],
+                                 d.codec_ctx->width, d.codec_ctx->height);
+                av_frame_unref(d.frame_raw);
+                /* Loop to retry avcodec_send_packet */
+            } else {
                 fprintf(stderr, "[decoder] send_packet error: %d\n", ret);
+                av_packet_unref(pkt);
+                break;
             }
         }
 
@@ -412,8 +461,8 @@ int decoder_start(AppState *state, const char *filepath)
     snprintf(state->video_path, LW_MAX_PATH, "%s", filepath);
 
     /* Reset state for new video */
-    atomic_store(&state->quit, false);
     atomic_store(&state->paused, false);
+    atomic_store(&state->decoder_ready, false);
     frame_queue_reset(&state->queue);
 
     /* Spawn the decoder thread */
