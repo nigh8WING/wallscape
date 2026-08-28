@@ -31,6 +31,7 @@ set(SOURCES
     src/thumbnail.c
     src/static_wallpaper.c
     src/gui.c
+    src/updater.c
 )
 
 # Executable target
@@ -67,3 +68,24 @@ install(FILES assets/live-wallpaper.svg
     DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
     RENAME live-wallpaper.svg
 )
+
+# ==========================================
+# CPack Packaging (.deb installer for Zorin OS)
+# ==========================================
+set(CPACK_PACKAGE_NAME "wallscape")
+set(CPACK_PACKAGE_VENDOR "WallScape")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "WallScape - Live Video & Static Desktop Wallpaper Manager for Zorin OS")
+set(CPACK_PACKAGE_VERSION "1.0.0")
+set(CPACK_GENERATOR "DEB")
+
+# Debian package metadata
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "WallScape Developer <support@wallscape.local>")
+set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/nigh8WING/zorin18-livewallpaper")
+
+# Automatically calculate shared library dependencies (FFmpeg, GTK3, SDL2, X11)
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+
+include(CPack)
+

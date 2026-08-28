@@ -87,7 +87,7 @@ static void setup_display_environment(void)
  * ──────────────────────────────────────────────────────────────────────────── */
 static void print_usage(const char *prog_name)
 {
-    printf("Live Wallpaper for Zorin OS / GNOME (X11 & Wayland)\n\n");
+    printf("WallScape — Live Wallpaper Manager for Zorin OS / GNOME (X11 & Wayland)\n\n");
     printf("Usage:\n");
     printf("  %s [options] [video_file]\n\n", prog_name);
     printf("Options:\n");
@@ -111,7 +111,7 @@ int main(int argc, char *argv[])
             print_usage(argv[0]);
             return 0;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
-            printf("live-wallpaper version 1.0.0 (C11, FFmpeg, SDL2, GTK3)\n");
+            printf("WallScape version 1.0.0 (C11, FFmpeg, SDL2, GTK3)\n");
             return 0;
         } else if (strcmp(argv[i], "--no-gui") == 0) {
             show_gui_window = false;
