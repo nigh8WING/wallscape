@@ -18,6 +18,7 @@
 #include "config.h"
 #include "thumbnail.h"
 #include "static_wallpaper.h"
+#include "updater.h"
 
 #include <gtk/gtk.h>
 #include <stdio.h>
@@ -49,6 +50,33 @@ static const char *STUDIO_CSS =
 ".sidebar-subtitle {"
 "    font-size: 10px;"
 "    opacity: 0.65;"
+"}"
+".sidebar-version {"
+"    font-size: 10px;"
+"    opacity: 0.50;"
+"    margin-bottom: 2px;"
+"}"
+".update-btn {"
+"    border-radius: 6px;"
+"    padding: 5px 8px;"
+"    font-size: 11px;"
+"    background-color: alpha(#3584e4, 0.12);"
+"    border: 1px solid alpha(#3584e4, 0.35);"
+"    color: alpha(@theme_fg_color, 0.85);"
+"    transition: all 120ms ease-in-out;"
+"}"
+".update-btn:hover {"
+"    background-color: alpha(#3584e4, 0.25);"
+"    border-color: #3584e4;"
+"}"
+".update-btn.available {"
+"    background-color: #2ec27e;"
+"    color: white;"
+"    font-weight: bold;"
+"    border-color: #26a269;"
+"}"
+".update-btn.available:hover {"
+"    background-color: #26a269;"
 "}"
 ".nav-btn {"
 "    border-radius: 8px;"
@@ -152,6 +180,7 @@ struct GuiCtx {
     GtkWidget    *stack;
     GtkWidget    *nav_live_btn;
     GtkWidget    *nav_static_btn;
+    GtkWidget    *update_btn;
     GtkWidget    *status_label;
     GtkWidget    *pause_btn;
     GtkWidget    *stop_btn;
@@ -162,6 +191,9 @@ struct GuiCtx {
     /* Static image grid */
     GridView      static_grid;
     char          active_static_path[LW_MAX_PATH];
+
+    /* Update status */
+    UpdateInfo    last_update_info;
 
     guint         render_timer_id;
 };
@@ -176,6 +208,7 @@ static void on_nav_tab_clicked(GtkButton *button, gpointer user_data);
 static void on_pause_toggled(GtkButton *button, gpointer user_data);
 static void on_stop_clicked(GtkButton *button, gpointer user_data);
 static void on_quit_clicked(GtkButton *button, gpointer user_data);
+static void on_update_btn_clicked(GtkButton *button, gpointer user_data);
 static gboolean on_window_delete_event(GtkWidget *widget, GdkEvent *event, gpointer user_data);
 
 static void populate_live_grid(GuiCtx *ctx, const char *folder, const char *active_file);
@@ -848,6 +881,176 @@ static gboolean on_render_tick(gpointer user_data)
     return G_SOURCE_CONTINUE;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Update Management & Dialogs
+ * ──────────────────────────────────────────────────────────────────────────── */
+static void on_update_download_complete(bool success, const char *deb_path, const char *error_msg, gpointer user_data)
+{
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!ctx || !ctx->window) return;
+
+    if (success) {
+        gui_set_status(ctx, "Installer launched! Please complete the installation in the installer window.");
+        GtkWidget *dialog = gtk_message_dialog_new(
+            GTK_WINDOW(ctx->window),
+            GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            GTK_MESSAGE_INFO,
+            GTK_BUTTONS_OK,
+            "Update Package Downloaded");
+        gtk_message_dialog_format_secondary_text(
+            GTK_MESSAGE_DIALOG(dialog),
+            "The installer has been launched automatically (%s).\nPlease follow the on-screen prompt to finish updating WallScape.",
+            deb_path ? deb_path : "/tmp/wallscape-latest.deb");
+        gtk_dialog_run(GTK_DIALOG(dialog));
+        gtk_widget_destroy(dialog);
+    } else {
+        gui_set_status(ctx, "Update download failed.");
+        GtkWidget *dialog = gtk_message_dialog_new(
+            GTK_WINDOW(ctx->window),
+            GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            GTK_MESSAGE_ERROR,
+            GTK_BUTTONS_OK,
+            "Update Failed");
+        gtk_message_dialog_format_secondary_text(
+            GTK_MESSAGE_DIALOG(dialog),
+            "%s", error_msg && error_msg[0] ? error_msg : "Could not download the update package.");
+        gtk_dialog_run(GTK_DIALOG(dialog));
+        gtk_widget_destroy(dialog);
+    }
+}
+
+static void show_update_dialog(GuiCtx *ctx, const UpdateInfo *info)
+{
+    GtkWidget *dialog = gtk_dialog_new_with_buttons(
+        "WallScape Update Available",
+        GTK_WINDOW(ctx->window),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        "Later", GTK_RESPONSE_CANCEL,
+        "View on GitHub", GTK_RESPONSE_HELP,
+        "Download & Install Update", GTK_RESPONSE_ACCEPT,
+        NULL);
+
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_ACCEPT);
+    gtk_window_set_default_size(GTK_WINDOW(dialog), 420, 240);
+
+    GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    gtk_container_set_border_width(GTK_CONTAINER(content_area), 16);
+
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_container_add(GTK_CONTAINER(content_area), vbox);
+
+    char title_str[256];
+    snprintf(title_str, sizeof(title_str),
+             "<span font='13' weight='bold'>🎉 New Version Available: v%s</span>",
+             info->latest_version);
+    GtkWidget *title_lbl = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(title_lbl), title_str);
+    gtk_label_set_xalign(GTK_LABEL(title_lbl), 0.0);
+    gtk_box_pack_start(GTK_BOX(vbox), title_lbl, FALSE, FALSE, 0);
+
+    char desc_str[512];
+    snprintf(desc_str, sizeof(desc_str),
+             "A newer version of WallScape is available on GitHub.\n"
+             "Installed: <b>v%s</b>  ➜  Latest: <b>v%s</b>",
+             info->current_version, info->latest_version);
+    GtkWidget *desc_lbl = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(desc_lbl), desc_str);
+    gtk_label_set_xalign(GTK_LABEL(desc_lbl), 0.0);
+    gtk_box_pack_start(GTK_BOX(vbox), desc_lbl, FALSE, FALSE, 0);
+
+    if (info->release_notes[0]) {
+        GtkWidget *notes_scr = gtk_scrolled_window_new(NULL, NULL);
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(notes_scr), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+        gtk_widget_set_size_request(notes_scr, -1, 90);
+
+        GtkWidget *notes_lbl = gtk_label_new(info->release_notes);
+        gtk_label_set_line_wrap(GTK_LABEL(notes_lbl), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(notes_lbl), 0.0);
+        gtk_label_set_yalign(GTK_LABEL(notes_lbl), 0.0);
+        gtk_container_add(GTK_CONTAINER(notes_scr), notes_lbl);
+        gtk_box_pack_start(GTK_BOX(vbox), notes_scr, TRUE, TRUE, 0);
+    }
+
+    gtk_widget_show_all(dialog);
+    gint res = gtk_dialog_run(GTK_DIALOG(dialog));
+
+    if (res == GTK_RESPONSE_ACCEPT) {
+        gui_set_status(ctx, "Downloading WallScape update package...");
+        updater_download_and_install_async(info->deb_download_url, NULL, on_update_download_complete, ctx);
+    } else if (res == GTK_RESPONSE_HELP) {
+        if (info->release_url[0]) {
+            gtk_show_uri_on_window(GTK_WINDOW(ctx->window), info->release_url, GDK_CURRENT_TIME, NULL);
+        }
+    }
+
+    gtk_widget_destroy(dialog);
+}
+
+static void on_bg_update_check_result(const UpdateInfo *info, gpointer user_data)
+{
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!ctx || !ctx->window) return;
+
+    if (ctx->update_btn) {
+        gtk_button_set_label(GTK_BUTTON(ctx->update_btn), "Check for Updates");
+    }
+
+    if (info->update_available) {
+        memcpy(&ctx->last_update_info, info, sizeof(UpdateInfo));
+        if (ctx->update_btn) {
+            char btn_lbl[64];
+            snprintf(btn_lbl, sizeof(btn_lbl), "Update v%s", info->latest_version);
+            gtk_button_set_label(GTK_BUTTON(ctx->update_btn), btn_lbl);
+            gtk_style_context_add_class(gtk_widget_get_style_context(ctx->update_btn), "available");
+        }
+        show_update_dialog(ctx, info);
+    }
+}
+
+static void on_manual_update_check_result(const UpdateInfo *info, gpointer user_data)
+{
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!ctx || !ctx->window) return;
+
+    if (ctx->update_btn) {
+        gtk_button_set_label(GTK_BUTTON(ctx->update_btn), "Check for Updates");
+    }
+
+    if (info->update_available) {
+        memcpy(&ctx->last_update_info, info, sizeof(UpdateInfo));
+        if (ctx->update_btn) {
+            char btn_lbl[64];
+            snprintf(btn_lbl, sizeof(btn_lbl), "Update v%s", info->latest_version);
+            gtk_button_set_label(GTK_BUTTON(ctx->update_btn), btn_lbl);
+            gtk_style_context_add_class(gtk_widget_get_style_context(ctx->update_btn), "available");
+        }
+        show_update_dialog(ctx, info);
+    } else {
+        GtkWidget *dialog = gtk_message_dialog_new(
+            GTK_WINDOW(ctx->window),
+            GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+            GTK_MESSAGE_INFO,
+            GTK_BUTTONS_OK,
+            info->error_msg[0] ? "Update Check" : "Up to Date");
+        gtk_message_dialog_format_secondary_text(
+            GTK_MESSAGE_DIALOG(dialog),
+            "%s", info->error_msg[0] ? info->error_msg : "WallScape is up to date (v" WALLSCAPE_CURRENT_VERSION ").");
+        gtk_dialog_run(GTK_DIALOG(dialog));
+        gtk_widget_destroy(dialog);
+    }
+}
+
+static void on_update_btn_clicked(GtkButton *btn, gpointer user_data)
+{
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (ctx->last_update_info.update_available) {
+        show_update_dialog(ctx, &ctx->last_update_info);
+        return;
+    }
+    gtk_button_set_label(btn, "Checking...");
+    updater_check_async(on_manual_update_check_result, ctx);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * Deferred folder restore (runs after window is fully realized)
  * ═══════════════════════════════════════════════════════════════════════════ */
@@ -868,6 +1071,9 @@ static gboolean on_restore_folders_idle(gpointer user_data)
         g_file_test(saved_static, G_FILE_TEST_IS_DIR)) {
         populate_static_grid(ctx, saved_static, NULL);
     }
+
+    /* Check for updates in background */
+    updater_check_async(on_bg_update_check_result, ctx);
 
     return G_SOURCE_REMOVE; /* one-shot */
 }
@@ -895,7 +1101,7 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
 
     /* Main Window */
     ctx->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(ctx->window), "Live Wallpaper Studio");
+    gtk_window_set_title(GTK_WINDOW(ctx->window), "WallScape");
     gtk_window_set_default_size(GTK_WINDOW(ctx->window), 780, 520);
     gtk_window_set_position(GTK_WINDOW(ctx->window), GTK_WIN_POS_CENTER);
 
@@ -961,12 +1167,12 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
     GtkWidget *brand_lbl_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_pack_start(GTK_BOX(logo_hbox), brand_lbl_box, TRUE, TRUE, 0);
 
-    GtkWidget *brand_title = gtk_label_new("Wallpaper");
+    GtkWidget *brand_title = gtk_label_new("WallScape");
     gtk_style_context_add_class(gtk_widget_get_style_context(brand_title), "sidebar-title");
     gtk_label_set_xalign(GTK_LABEL(brand_title), 0.0);
     gtk_box_pack_start(GTK_BOX(brand_lbl_box), brand_title, FALSE, FALSE, 0);
 
-    GtkWidget *brand_sub = gtk_label_new("Studio for Zorin OS");
+    GtkWidget *brand_sub = gtk_label_new("for Zorin OS");
     gtk_style_context_add_class(gtk_widget_get_style_context(brand_sub), "sidebar-subtitle");
     gtk_label_set_xalign(GTK_LABEL(brand_sub), 0.0);
     gtk_box_pack_start(GTK_BOX(brand_lbl_box), brand_sub, FALSE, FALSE, 0);
@@ -997,6 +1203,26 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
     g_object_set_data(G_OBJECT(ctx->nav_static_btn), "tab", (gpointer)"static");
     g_signal_connect(ctx->nav_static_btn, "clicked", G_CALLBACK(on_nav_tab_clicked), ctx);
     gtk_box_pack_start(GTK_BOX(sidebar), ctx->nav_static_btn, FALSE, FALSE, 0);
+
+    /* Sidebar vertical expanding spacer */
+    GtkWidget *sidebar_spacer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(sidebar), sidebar_spacer, TRUE, TRUE, 0);
+
+    /* Sidebar Footer: Version and Update Checker */
+    GtkWidget *side_footer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_box_pack_end(GTK_BOX(sidebar), side_footer, FALSE, FALSE, 0);
+
+    GtkWidget *ver_lbl = gtk_label_new("v" WALLSCAPE_CURRENT_VERSION);
+    gtk_style_context_add_class(gtk_widget_get_style_context(ver_lbl), "sidebar-version");
+    gtk_label_set_xalign(GTK_LABEL(ver_lbl), 0.5);
+    gtk_box_pack_start(GTK_BOX(side_footer), ver_lbl, FALSE, FALSE, 0);
+
+    ctx->update_btn = gtk_button_new_with_label("Check for Updates");
+    gtk_button_set_image(GTK_BUTTON(ctx->update_btn), gtk_image_new_from_icon_name("software-update-available-symbolic", GTK_ICON_SIZE_BUTTON));
+    gtk_button_set_always_show_image(GTK_BUTTON(ctx->update_btn), TRUE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(ctx->update_btn), "update-btn");
+    g_signal_connect(ctx->update_btn, "clicked", G_CALLBACK(on_update_btn_clicked), ctx);
+    gtk_box_pack_start(GTK_BOX(side_footer), ctx->update_btn, FALSE, FALSE, 0);
 
     /* ═══════════════════════════════════════════════════════════════════════
      * RIGHT MAIN CONTENT (GtkStack)

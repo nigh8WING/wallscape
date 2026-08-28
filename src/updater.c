@@ -1,0 +1,318 @@
+/*
+ * updater.c — GitHub Releases updater implementation for WallScape.
+ */
+
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <pthread.h>
+#include <ctype.h>
+#include <unistd.h>
+
+#include "updater.h"
+
+/* Internal context for passing check results to GTK main thread */
+typedef struct {
+    UpdateCheckCallback callback;
+    gpointer            user_data;
+    UpdateInfo          info;
+} CheckTaskCtx;
+
+/* Internal context for download task */
+typedef struct {
+    char deb_url[1024];
+    UpdateDownloadProgressCallback progress_cb;
+    UpdateDownloadCompleteCallback complete_cb;
+    gpointer user_data;
+} DownloadTaskCtx;
+
+typedef struct {
+    UpdateDownloadCompleteCallback complete_cb;
+    gpointer user_data;
+    bool success;
+    char deb_path[512];
+    char error_msg[256];
+} DownloadResultCtx;
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Semantic Version Comparison
+ * ──────────────────────────────────────────────────────────────────────────── */
+static void parse_version_parts(const char *ver, int *major, int *minor, int *patch)
+{
+    *major = *minor = *patch = 0;
+    if (!ver) return;
+
+    /* Skip leading 'v' or 'V' */
+    while (*ver && (*ver == 'v' || *ver == 'V' || isspace((unsigned char)*ver))) {
+        ver++;
+    }
+
+    sscanf(ver, "%d.%d.%d", major, minor, patch);
+}
+
+int updater_compare_versions(const char *v1, const char *v2)
+{
+    int maj1 = 0, min1 = 0, pat1 = 0;
+    int maj2 = 0, min2 = 0, pat2 = 0;
+
+    parse_version_parts(v1, &maj1, &min1, &pat1);
+    parse_version_parts(v2, &maj2, &min2, &pat2);
+
+    if (maj1 != maj2) return maj1 - maj2;
+    if (min1 != min2) return min1 - min2;
+    return pat1 - pat2;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * JSON Parser Helpers (Lightweight & dependency-free)
+ * ──────────────────────────────────────────────────────────────────────────── */
+static bool extract_json_string(const char *json, const char *key, char *out, size_t out_sz)
+{
+    if (!json || !key || !out || out_sz == 0) return false;
+
+    char search_key[128];
+    snprintf(search_key, sizeof(search_key), "\"%s\"", key);
+
+    const char *pos = strstr(json, search_key);
+    if (!pos) return false;
+
+    pos += strlen(search_key);
+    while (*pos && (*pos == ':' || isspace((unsigned char)*pos))) pos++;
+
+    if (*pos != '"') return false;
+    pos++; /* skip opening quote */
+
+    size_t i = 0;
+    while (*pos && *pos != '"' && i < out_sz - 1) {
+        if (*pos == '\\' && *(pos + 1)) {
+            pos++;
+            if (*pos == 'n') out[i++] = '\n';
+            else if (*pos == 'r') out[i++] = '\r';
+            else if (*pos == 't') out[i++] = '\t';
+            else out[i++] = *pos;
+        } else {
+            out[i++] = *pos;
+        }
+        pos++;
+        i++;
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
+static bool extract_deb_download_url(const char *json, char *out, size_t out_sz)
+{
+    if (!json || !out || out_sz == 0) return false;
+
+    const char *pos = json;
+    while ((pos = strstr(pos, "\"browser_download_url\"")) != NULL) {
+        pos += strlen("\"browser_download_url\"");
+        while (*pos && (*pos == ':' || isspace((unsigned char)*pos))) pos++;
+
+        if (*pos == '"') {
+            pos++;
+            const char *url_start = pos;
+            while (*pos && *pos != '"') pos++;
+            size_t len = (size_t)(pos - url_start);
+
+            if (len > 4 && strncmp(pos - 4, ".deb", 4) == 0) {
+                if (len >= out_sz) len = out_sz - 1;
+                strncpy(out, url_start, len);
+                out[len] = '\0';
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Check Update Background Worker
+ * ──────────────────────────────────────────────────────────────────────────── */
+static gboolean dispatch_check_result_on_main(gpointer data)
+{
+    CheckTaskCtx *task = (CheckTaskCtx *)data;
+    if (task->callback) {
+        task->callback(&task->info, task->user_data);
+    }
+    free(task);
+    return G_SOURCE_REMOVE;
+}
+
+static void *updater_check_thread(void *arg)
+{
+    CheckTaskCtx *task = (CheckTaskCtx *)arg;
+    memset(&task->info, 0, sizeof(UpdateInfo));
+    snprintf(task->info.current_version, sizeof(task->info.current_version), "%s", WALLSCAPE_CURRENT_VERSION);
+
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+             "curl -s -L --max-time 8 -H \"User-Agent: WallScape-App/%s\" "
+             "\"https://api.github.com/repos/%s/releases/latest\"",
+             WALLSCAPE_CURRENT_VERSION, WALLSCAPE_GITHUB_REPO);
+
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        snprintf(task->info.error_msg, sizeof(task->info.error_msg), "Could not execute curl to check for updates.");
+        g_idle_add(dispatch_check_result_on_main, task);
+        return NULL;
+    }
+
+    /* Read response buffer */
+    size_t cap = 64 * 1024;
+    char *buf = (char *)malloc(cap);
+    if (!buf) {
+        pclose(fp);
+        snprintf(task->info.error_msg, sizeof(task->info.error_msg), "Out of memory.");
+        g_idle_add(dispatch_check_result_on_main, task);
+        return NULL;
+    }
+
+    size_t total_read = 0;
+    while (!feof(fp) && total_read < cap - 1) {
+        size_t n = fread(buf + total_read, 1, cap - 1 - total_read, fp);
+        if (n == 0) break;
+        total_read += n;
+    }
+    buf[total_read] = '\0';
+    pclose(fp);
+
+    if (total_read == 0) {
+        snprintf(task->info.error_msg, sizeof(task->info.error_msg), "No response from update server (check internet connection).");
+        free(buf);
+        g_idle_add(dispatch_check_result_on_main, task);
+        return NULL;
+    }
+
+    /* Check for GitHub API error message (e.g. rate limit or Not Found) */
+    if (strstr(buf, "\"message\": \"Not Found\"")) {
+        snprintf(task->info.error_msg, sizeof(task->info.error_msg), "No releases published yet on GitHub repository.");
+        free(buf);
+        g_idle_add(dispatch_check_result_on_main, task);
+        return NULL;
+    }
+
+    /* Extract tag_name */
+    char raw_tag[64] = {0};
+    if (!extract_json_string(buf, "tag_name", raw_tag, sizeof(raw_tag))) {
+        snprintf(task->info.error_msg, sizeof(task->info.error_msg), "Invalid response from GitHub Releases API.");
+        free(buf);
+        g_idle_add(dispatch_check_result_on_main, task);
+        return NULL;
+    }
+
+    /* Clean version string */
+    const char *ver_p = raw_tag;
+    while (*ver_p == 'v' || *ver_p == 'V' || isspace((unsigned char)*ver_p)) ver_p++;
+    snprintf(task->info.latest_version, sizeof(task->info.latest_version), "%s", ver_p);
+
+    extract_json_string(buf, "html_url", task->info.release_url, sizeof(task->info.release_url));
+    extract_json_string(buf, "body", task->info.release_notes, sizeof(task->info.release_notes));
+    extract_deb_download_url(buf, task->info.deb_download_url, sizeof(task->info.deb_download_url));
+
+    /* Compare version */
+    if (updater_compare_versions(task->info.latest_version, task->info.current_version) > 0) {
+        task->info.update_available = true;
+    }
+
+    free(buf);
+    g_idle_add(dispatch_check_result_on_main, task);
+    return NULL;
+}
+
+void updater_check_async(UpdateCheckCallback callback, gpointer user_data)
+{
+    CheckTaskCtx *task = (CheckTaskCtx *)calloc(1, sizeof(CheckTaskCtx));
+    if (!task) return;
+
+    task->callback = callback;
+    task->user_data = user_data;
+
+    pthread_t tid;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&tid, &attr, updater_check_thread, task) != 0) {
+        free(task);
+    }
+    pthread_attr_destroy(&attr);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Download and Install Background Worker
+ * ──────────────────────────────────────────────────────────────────────────── */
+static gboolean dispatch_download_result_on_main(gpointer data)
+{
+    DownloadResultCtx *res = (DownloadResultCtx *)data;
+    if (res->complete_cb) {
+        res->complete_cb(res->success, res->deb_path, res->error_msg, res->user_data);
+    }
+    free(res);
+    return G_SOURCE_REMOVE;
+}
+
+static void *updater_download_thread(void *arg)
+{
+    DownloadTaskCtx *task = (DownloadTaskCtx *)arg;
+    DownloadResultCtx *res = (DownloadResultCtx *)calloc(1, sizeof(DownloadResultCtx));
+    if (!res) {
+        free(task);
+        return NULL;
+    }
+
+    res->complete_cb = task->complete_cb;
+    res->user_data = task->user_data;
+    snprintf(res->deb_path, sizeof(res->deb_path), "/tmp/wallscape-latest.deb");
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "curl -s -L -f -o \"%s\" \"%s\"", res->deb_path, task->deb_url);
+
+    int ret = system(cmd);
+    if (ret == 0 && access(res->deb_path, R_OK) == 0) {
+        res->success = true;
+        /* Trigger native installer via xdg-open / gio */
+        char launch_cmd[2048];
+        snprintf(launch_cmd, sizeof(launch_cmd), "xdg-open \"%s\" || gio open \"%s\" &", res->deb_path, res->deb_path);
+        int launch_res = system(launch_cmd);
+        (void)launch_res;
+    } else {
+        res->success = false;
+        snprintf(res->error_msg, sizeof(res->error_msg), "Failed to download update package.");
+    }
+
+    free(task);
+    g_idle_add(dispatch_download_result_on_main, res);
+    return NULL;
+}
+
+void updater_download_and_install_async(const char *deb_url,
+                                       UpdateDownloadProgressCallback progress_cb,
+                                       UpdateDownloadCompleteCallback complete_cb,
+                                       gpointer user_data)
+{
+    if (!deb_url || strlen(deb_url) == 0) {
+        if (complete_cb) {
+            complete_cb(false, NULL, "No download URL available for update package.", user_data);
+        }
+        return;
+    }
+
+    DownloadTaskCtx *task = (DownloadTaskCtx *)calloc(1, sizeof(DownloadTaskCtx));
+    if (!task) return;
+
+    snprintf(task->deb_url, sizeof(task->deb_url), "%s", deb_url);
+    task->progress_cb = progress_cb;
+    task->complete_cb = complete_cb;
+    task->user_data = user_data;
+
+    pthread_t tid;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&tid, &attr, updater_download_thread, task) != 0) {
+        free(task);
+    }
+    pthread_attr_destroy(&attr);
+}

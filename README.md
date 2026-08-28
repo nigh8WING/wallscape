@@ -1,4 +1,4 @@
-# Wallpaper Studio for Zorin OS (18 & 17) / GNOME
+# WallScape — Live & Static Wallpaper Manager for Zorin OS / GNOME
 
 A lightweight, hardware-accelerated dual-mode **Live Video & Static Image** desktop wallpaper manager written in pure **C11**, designed specifically for **Zorin OS 18 & 17** (Ubuntu 24.04 / 22.04 LTS, GNOME/Mutter, x86_64).
 
@@ -56,7 +56,18 @@ cmake --build build
 
 The compiled binary will be located at `./build/live-wallpaper`.
 
-### 2. System-wide Installation (Optional)
+### 2. Create Double-Click `.deb` Installer (Recommended for Zorin OS)
+
+To generate an installer file that users can double-click to install on Zorin OS:
+
+```bash
+cd build
+cpack -G DEB
+```
+
+This generates `live-wallpaper-1.0.0-Linux.deb` in the `build/` directory.
+
+### 3. System-wide Installation (Direct)
 
 ```bash
 sudo cmake --install build
@@ -106,6 +117,25 @@ To make your live wallpaper launch automatically whenever you log into Zorin OS:
 mkdir -p ~/.config/autostart
 cp live-wallpaper.desktop ~/.config/autostart/
 ```
+
+---
+
+## 🚀 Publishing Releases & Automatic Updates
+
+WallScape has a built-in **Auto-Updater** that checks GitHub Releases for new updates.
+
+### How to Publish a New Version:
+1. Update `CPACK_PACKAGE_VERSION` in [`CMakeLists.txt`](file:///home/user/Coding/Live%20Wallpaper%20Software/CMakeLists.txt) and `WALLSCAPE_CURRENT_VERSION` in [`src/updater.h`](file:///home/user/Coding/Live%20Wallpaper%20Software/src/updater.h) (e.g. `1.1.0`).
+2. Commit and push a git tag to GitHub:
+   ```bash
+   git tag v1.1.0
+   git push origin v1.1.0
+   ```
+3. GitHub Actions will automatically:
+   * Build WallScape on Ubuntu
+   * Package `wallscape-1.1.0-Linux.deb`
+   * Create a GitHub Release with the `.deb` attached
+4. Existing users running WallScape will automatically receive an update notification prompting them to download and install the new version with one click!
 
 ---
 

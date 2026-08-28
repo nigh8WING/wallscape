@@ -1,85 +1,32 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#1a1a2e"/>
-      <stop offset="100%" stop-color="#0d0d1a"/>
+    <linearGradient id="front" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5b8cff"/>
+      <stop offset="100%" stop-color="#8a5bff"/>
     </linearGradient>
-    <linearGradient id="screenGrad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#0f2027"/>
-      <stop offset="60%" stop-color="#203a43"/>
-      <stop offset="100%" stop-color="#2c5364"/>
-    </linearGradient>
-    <linearGradient id="wave1" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#00c9ff" stop-opacity="0.9"/>
-      <stop offset="100%" stop-color="#92fe9d" stop-opacity="0.7"/>
-    </linearGradient>
-    <linearGradient id="wave2" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#f857a6" stop-opacity="0.85"/>
-      <stop offset="100%" stop-color="#ff5858" stop-opacity="0.6"/>
-    </linearGradient>
-    <linearGradient id="playBtn" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#00c9ff"/>
-      <stop offset="100%" stop-color="#0077ff"/>
-    </linearGradient>
-    <filter id="glow">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-    <clipPath id="screen-clip">
-      <rect x="92" y="104" width="328" height="204" rx="8"/>
-    </clipPath>
   </defs>
 
-  <!-- App background squircle -->
-  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- App icon background -->
+  <rect width="512" height="512" rx="108" fill="#181a22"/>
 
-  <!-- Subtle top vignette -->
-  <ellipse cx="256" cy="48" rx="220" ry="60" fill="#00c9ff" opacity="0.04"/>
+  <!-- Back card (still image, most rotated) -->
+  <rect x="0" y="0" width="220" height="150" rx="20"
+        fill="#3a3d52"
+        transform="translate(196,291) rotate(-16) translate(-110,-75)"/>
 
-  <!-- Monitor chassis -->
-  <rect x="80" y="92" width="352" height="228" rx="16" fill="#1e2235" stroke="#2d3250" stroke-width="2.5"/>
+  <!-- Middle card (still image) -->
+  <rect x="0" y="0" width="220" height="150" rx="20"
+        fill="#565a78"
+        transform="translate(256,256) rotate(-6) translate(-110,-75)"/>
 
-  <!-- Screen -->
-  <rect x="92" y="104" width="328" height="204" rx="8" fill="url(#screenGrad)"/>
+  <!-- Front card (active / video wallpaper) -->
+  <rect x="0" y="0" width="240" height="164" rx="22"
+        fill="url(#front)"
+        transform="translate(346,224) rotate(6) translate(-120,-82)"/>
 
-  <!-- Animated landscape on screen -->
-  <g clip-path="url(#screen-clip)">
-    <!-- Sky glow orb -->
-    <ellipse cx="310" cy="160" rx="60" ry="60" fill="#00c9ff" opacity="0.10"/>
-    <circle cx="310" cy="160" r="20" fill="#ffffff" opacity="0.88" filter="url(#glow)"/>
-
-    <!-- Stars -->
-    <circle cx="130" cy="126" r="1.5" fill="#fff" opacity="0.7"/>
-    <circle cx="175" cy="118" r="1" fill="#fff" opacity="0.5"/>
-    <circle cx="220" cy="132" r="1.8" fill="#fff" opacity="0.65"/>
-    <circle cx="380" cy="122" r="1.2" fill="#fff" opacity="0.55"/>
-    <circle cx="148" cy="152" r="1.5" fill="#00c9ff" opacity="0.8"/>
-    <circle cx="370" cy="145" r="1.8" fill="#f857a6" opacity="0.75"/>
-
-    <!-- Wave 2 (back, pink) -->
-    <path d="M 92 260 C 150 210, 210 250, 280 218 C 330 193, 370 215, 420 200 L 420 308 L 92 308 Z"
-          fill="url(#wave2)" opacity="0.7"/>
-    <!-- Wave 1 (front, cyan) -->
-    <path d="M 92 278 C 160 228, 225 265, 295 238 C 345 218, 385 242, 420 228 L 420 308 L 92 308 Z"
-          fill="url(#wave1)" opacity="0.85"/>
-
-    <!-- Mountain silhouettes -->
-    <polygon points="92,308 158,228 225,308" fill="#0a0f1e" opacity="0.9"/>
-    <polygon points="195,308 276,204 358,308" fill="#0d1424" opacity="0.95"/>
-    <polygon points="315,308 370,248 425,308" fill="#0a0f1e" opacity="0.85"/>
+  <!-- Play triangle on front card -->
+  <g transform="translate(346,224) rotate(6)">
+    <circle cx="0" cy="0" r="34" fill="#ffffff" opacity="0.16"/>
+    <polygon points="-12,-18 -12,18 20,0" fill="#ffffff"/>
   </g>
-
-  <!-- Monitor stand stem -->
-  <rect x="236" y="320" width="40" height="52" rx="4" fill="#171a2a"/>
-  <!-- Monitor base -->
-  <rect x="195" y="370" width="122" height="12" rx="6" fill="#1e2235" stroke="#2d3250" stroke-width="1.5"/>
-
-  <!-- Play badge circle (bottom-right) -->
-  <circle cx="368" cy="340" r="52" fill="#0d0d1a" opacity="0.85"/>
-  <circle cx="368" cy="340" r="44" fill="url(#playBtn)" filter="url(#glow)"/>
-  <!-- Play triangle -->
-  <polygon points="358,322 390,340 358,358" fill="#ffffff"/>
 </svg>

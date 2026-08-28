@@ -1,0 +1,50 @@
+name: Build & Test CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build & Package Check
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential \
+            cmake \
+            pkg-config \
+            libavformat-dev \
+            libavcodec-dev \
+            libavutil-dev \
+            libswscale-dev \
+            libsdl2-dev \
+            libgtk-3-dev \
+            libx11-dev \
+            libxfixes-dev \
+            libxext-dev \
+            dpkg-dev
+
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compile WallScape
+        run: cmake --build build --config Release
+
+      - name: Package Debian (.deb)
+        run: |
+          cd build
+          cpack -G DEB
+
+      - name: Verify Package
+        run: |
+          dpkg-deb -I build/wallscape-*.deb
+          dpkg-deb -c build/wallscape-*.deb
