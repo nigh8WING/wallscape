@@ -79,7 +79,7 @@
                                ▲
 ┌──────────────────────────────┴──────────────────────────────────────────────┐
 │                    Updater Background Thread (updater.c)                     │
-│  Checks GitHub API: GET /repos/nigh8WING/zorin18-livewallpaper/releases/latest│
+│  Checks GitHub API: GET /repos/nigh8WING/wallscape/releases/latest            │
 │  - Parses tag_name, compare semver, downloads .deb & launches installer      │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
