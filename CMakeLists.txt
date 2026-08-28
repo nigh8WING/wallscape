@@ -51,6 +51,7 @@ target_link_libraries(live-wallpaper PRIVATE
     PkgConfig::XEXT
     pthread
     m
+    ${CMAKE_DL_LIBS}
 )
 
 # Installation rules
@@ -75,7 +76,7 @@ install(FILES assets/live-wallpaper.svg
 set(CPACK_PACKAGE_NAME "wallscape")
 set(CPACK_PACKAGE_VENDOR "WallScape")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "WallScape - Live Video & Static Desktop Wallpaper Manager for Zorin OS")
-set(CPACK_PACKAGE_VERSION "1.2.1")
+set(CPACK_PACKAGE_VERSION "1.3.0")
 set(CPACK_GENERATOR "DEB")
 
 # Debian package metadata
