@@ -274,21 +274,41 @@ static void *updater_download_thread(void *arg)
     if (ret == 0 && access(res->deb_path, R_OK) == 0) {
         res->success = true;
 
-        /* Try direct background installation via PolicyKit (pkexec) */
-        char install_cmd[2048];
-        snprintf(install_cmd, sizeof(install_cmd),
-                 "pkexec apt-get install -y --reinstall \"%s\" || pkexec dpkg -i \"%s\"",
-                 res->deb_path, res->deb_path);
-        int inst_res = system(install_cmd);
+        /* Option A: Direct In-Place User-Space Extraction & Installation (Zero root prompt, Zero App Store) */
+        const char *home = getenv("HOME");
+        int inst_res = -1;
+        if (home && strlen(home) > 0) {
+            char install_cmd[4096];
+            snprintf(install_cmd, sizeof(install_cmd),
+                     "mkdir -p \"%s/.local/share/wallscape\" \"%s/.local/bin\" \"%s/.local/share/applications\" \"%s/.local/share/icons\" && "
+                     "dpkg-deb -x \"%s\" \"%s/.local/share/wallscape\" && "
+                     "cp -f \"%s/.local/share/wallscape/usr/bin/live-wallpaper\" \"%s/.local/bin/live-wallpaper\" && "
+                     "chmod +x \"%s/.local/bin/live-wallpaper\" && "
+                     "cp -rf \"%s/.local/share/wallscape/usr/share/icons/\"* \"%s/.local/share/icons/\" 2>/dev/null || true && "
+                     "cp -f \"%s/.local/share/wallscape/usr/share/applications/live-wallpaper.desktop\" \"%s/.local/share/applications/live-wallpaper.desktop\" 2>/dev/null || true && "
+                     "sed -i 's|Exec=live-wallpaper|Exec=%s/.local/bin/live-wallpaper|g' \"%s/.local/share/applications/live-wallpaper.desktop\" 2>/dev/null || true && "
+                     "gtk-update-icon-cache -f -t \"%s/.local/share/icons/hicolor\" 2>/dev/null || true",
+                     home, home, home, home,
+                     res->deb_path, home,
+                     home, home,
+                     home,
+                     home, home,
+                     home, home,
+                     home, home,
+                     home);
+            inst_res = system(install_cmd);
+        }
 
         if (inst_res == 0) {
             res->installed_directly = true;
         } else {
-            /* Fallback to GUI package manager if pkexec was cancelled or failed */
-            char launch_cmd[2048];
-            snprintf(launch_cmd, sizeof(launch_cmd), "xdg-open \"%s\" || gio open \"%s\" &", res->deb_path, res->deb_path);
-            int launch_res = system(launch_cmd);
-            (void)launch_res;
+            /* Fallback to PolicyKit or App Center if user-space extraction failed */
+            char fallback_cmd[2048];
+            snprintf(fallback_cmd, sizeof(fallback_cmd),
+                     "pkexec dpkg -i \"%s\" || xdg-open \"%s\" &",
+                     res->deb_path, res->deb_path);
+            int fb_res = system(fallback_cmd);
+            (void)fb_res;
             res->installed_directly = false;
         }
     } else {

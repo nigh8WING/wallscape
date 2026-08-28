@@ -149,27 +149,30 @@ cpack -G DEB
 ## 6. Release & Distribution Workflow
 
 ### Mandatory Versioning Rule for New Features & Bug Fixes
-Every update pushed to `main` that introduces **new features** or **bug fixes** must increment the version number in both [`CMakeLists.txt`](file:///home/user/Coding/Live%20Wallpaper%20Software/CMakeLists.txt) (`set(CPACK_PACKAGE_VERSION "X.Y.Z")`) and [`src/updater.h`](file:///home/user/Coding/Live%20Wallpaper%20Software/src/updater.h) (`#define WALLSCAPE_CURRENT_VERSION "X.Y.Z"`).
+Every update pushed to `main` that introduces **new features** or **bug fixes** must increment the version number in both [`CMakeLists.txt`](file:///home/user/Coding/Live%20Wallpaper%20Software/CMakeLists.txt) (`set(CPACK_PACKAGE_VERSION "X.Y")`) and [`src/updater.h`](file:///home/user/Coding/Live%20Wallpaper%20Software/src/updater.h) (`#define WALLSCAPE_CURRENT_VERSION "X.Y"`).
 
-#### Versioning Standard (`MAJOR.MINOR.PATCH`):
-- **PATCH Bump (`1.2.0` ➜ `1.2.1`)**: Bug fixes, stability improvements, UI responsiveness fixes, performance optimizations.
-- **MINOR Bump (`1.2.0` ➜ `1.3.0`)**: New features, new capabilities (e.g. multi-folder management, new settings, new format support).
-- **MAJOR Bump (`1.0.0` ➜ `2.0.0`)**: Major architectural redesigns or breaking changes.
+#### Versioning Standard (`1.1 ➜ 1.9 ➜ 2.0`):
+- **Incremental Decimal Progression**: Versions progress sequentially: `1.1` ➜ `1.2` ➜ `1.3` ➜ `1.4` ➜ `1.5` ➜ `1.6` ➜ `1.7` ➜ `1.8` ➜ `1.9`.
+- **Major Milestone Roll-Over**: Reaching beyond `1.9` rolls over into **`2.0`** (then `2.1` ➜ `2.9` ➜ `3.0`).
 
-### Automated Release Lifecycle:
+### Automated In-Place User-Space Auto-Update Lifecycle:
 1. Bump version in `CMakeLists.txt` and `src/updater.h`.
 2. Commit and push to `main`:
    ```bash
-   git commit -am "feat/fix: describe changes and bump version to vX.Y.Z"
+   git commit -am "feat/fix: describe changes and bump version to vX.Y"
    git push origin main
    ```
 3. GitHub Actions (`.github/workflows/ci.yml`):
-   - Automatically detects the new version tag `vX.Y.Z`.
+   - Automatically detects the new version tag `vX.Y`.
    - Compiles WallScape with `-O2` optimizations.
-   - Builds the Debian package `wallscape-X.Y.Z-Linux.deb` with CPack.
-   - Automatically creates the Git tag `vX.Y.Z`.
+   - Builds the Debian package `wallscape-X.Y-Linux.deb` with CPack.
+   - Automatically creates the Git tag `vX.Y`.
    - Publishes the new GitHub Release with generated release notes and the `.deb` asset attached.
-4. Installed WallScape clients automatically detect the new release on startup or via the "Check for Updates" button and prompt the user with a 1-click upgrade.
+4. Installed WallScape clients:
+   - Check GitHub API asynchronously.
+   - When user clicks **"Update vX.Y"**, the app downloads the `.deb` into user space (`~/.local/share/wallscape/`).
+   - Unpacks via `dpkg-deb -x` without requiring root permissions, passwords, or the GNOME App Store.
+   - Automatically relaunches the updated binary (`~/.local/bin/live-wallpaper`) in under 1 second.
 
 ---
 

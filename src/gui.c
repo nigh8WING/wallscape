@@ -1363,31 +1363,20 @@ static void on_update_download_complete(bool success, bool installed_directly, c
 
     if (success) {
         if (installed_directly) {
-            gui_set_status(ctx, "🎉 Update installed successfully! Restart to apply changes.");
-            GtkWidget *dialog = gtk_message_dialog_new(
-                GTK_WINDOW(ctx->window),
-                GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-                GTK_MESSAGE_INFO,
-                GTK_BUTTONS_NONE,
-                "Update Installed Successfully!");
-            gtk_dialog_add_button(GTK_DIALOG(dialog), "Later", GTK_RESPONSE_CANCEL);
-            gtk_dialog_add_button(GTK_DIALOG(dialog), "Restart Now", GTK_RESPONSE_ACCEPT);
-            gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_ACCEPT);
-
-            gtk_message_dialog_format_secondary_text(
-                GTK_MESSAGE_DIALOG(dialog),
-                "WallScape has been updated in the background to the latest version.\nWould you like to restart WallScape now to apply the changes?");
-            gint res = gtk_dialog_run(GTK_DIALOG(dialog));
-            gtk_widget_destroy(dialog);
-
-            if (res == GTK_RESPONSE_ACCEPT) {
-                g_spawn_command_line_async("live-wallpaper", NULL);
-                GApplication *app = g_application_get_default();
-                if (app) {
-                    g_application_quit(app);
-                } else {
-                    gtk_main_quit();
-                }
+            gui_set_status(ctx, "🎉 Update applied! Restarting WallScape...");
+            const char *home = getenv("HOME");
+            char exec_path[512];
+            if (home && strlen(home) > 0) {
+                snprintf(exec_path, sizeof(exec_path), "%s/.local/bin/live-wallpaper", home);
+            } else {
+                snprintf(exec_path, sizeof(exec_path), "live-wallpaper");
+            }
+            g_spawn_command_line_async(exec_path, NULL);
+            GApplication *app = g_application_get_default();
+            if (app) {
+                g_application_quit(app);
+            } else {
+                gtk_main_quit();
             }
         } else {
             gui_set_status(ctx, "Installer launched in App Store.");
