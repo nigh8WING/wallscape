@@ -279,7 +279,7 @@ struct GuiCtx {
 static gboolean on_render_tick(gpointer user_data);
 static void on_back_btn_clicked(GtkButton *button, gpointer user_data);
 static void on_add_folder_btn_clicked(GtkButton *button, gpointer user_data);
-static void on_folder_card_clicked(GtkButton *button, gpointer user_data);
+static gboolean on_folder_card_button_press(GtkWidget *widget, GdkEventButton *event, gpointer user_data);
 static void on_remove_folder_clicked(GtkWidget *button, gpointer user_data);
 static void on_live_card_clicked(GtkButton *button, gpointer user_data);
 static void on_static_card_clicked(GtkButton *button, gpointer user_data);
@@ -310,51 +310,66 @@ static void on_tray_popup_menu(GtkStatusIcon *icon, guint button,
                                guint activate_time, gpointer user_data);
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Async Thumbnail Loader
+ * Async Thumbnail Loader (Detached Background Threads)
  *
- * Thumbnails are generated lazily via g_idle_add() so grid population never
- * blocks the GTK main thread.  Each card initially shows a generic icon;
- * the idle callback replaces it with the real thumbnail when the CPU is idle.
+ * Video and image decoding is offloaded to background threads.
+ * When decoding finishes, the resulting GdkPixbuf is dispatched to the GTK
+ * main thread via g_idle_add() to prevent UI freezing and frame stutter.
  * ──────────────────────────────────────────────────────────────────────────── */
 typedef struct {
     char        filepath[LW_MAX_PATH];
     int         target_w;
     int         target_h;
-    GtkWidget  *image_widget; /* the GtkImage inside the card to update */
-    bool        is_video;
-} ThumbLoadCtx;
+    GtkWidget  *image_widget;
+    GdkPixbuf  *thumb;
+} ThumbWorkerCtx;
 
-static gboolean thumb_load_idle(gpointer user_data)
+static gboolean thumb_apply_on_main(gpointer user_data)
 {
-    ThumbLoadCtx *tctx = (ThumbLoadCtx *)user_data;
-
-    /* Widget might have been destroyed (e.g. user changed folder quickly) */
-    if (!GTK_IS_IMAGE(tctx->image_widget)) {
+    ThumbWorkerCtx *tctx = (ThumbWorkerCtx *)user_data;
+    if (tctx) {
+        if (GTK_IS_IMAGE(tctx->image_widget) && tctx->thumb) {
+            gtk_image_set_from_pixbuf(GTK_IMAGE(tctx->image_widget), tctx->thumb);
+        }
+        if (tctx->thumb) {
+            g_object_unref(tctx->thumb);
+        }
         free(tctx);
-        return G_SOURCE_REMOVE;
     }
-
-    GdkPixbuf *thumb = thumbnail_generate(tctx->filepath,
-                                          tctx->target_w, tctx->target_h);
-    if (thumb) {
-        gtk_image_set_from_pixbuf(GTK_IMAGE(tctx->image_widget), thumb);
-        g_object_unref(thumb);
-    }
-    free(tctx);
     return G_SOURCE_REMOVE;
 }
 
-/* Schedule an asynchronous thumbnail load for an image widget. */
+static void *thumb_worker_thread(void *arg)
+{
+    ThumbWorkerCtx *tctx = (ThumbWorkerCtx *)arg;
+    if (tctx) {
+        tctx->thumb = thumbnail_generate(tctx->filepath, tctx->target_w, tctx->target_h);
+        g_idle_add(thumb_apply_on_main, tctx);
+    }
+    return NULL;
+}
+
 static void schedule_thumb_load(GtkWidget *image_widget, const char *filepath,
                                 int target_w, int target_h)
 {
-    ThumbLoadCtx *tctx = (ThumbLoadCtx *)malloc(sizeof(ThumbLoadCtx));
+    if (!image_widget || !filepath || !filepath[0]) return;
+
+    ThumbWorkerCtx *tctx = (ThumbWorkerCtx *)calloc(1, sizeof(ThumbWorkerCtx));
     if (!tctx) return;
-    snprintf(tctx->filepath, LW_MAX_PATH, "%s", filepath);
+
+    snprintf(tctx->filepath, sizeof(tctx->filepath), "%s", filepath);
     tctx->target_w     = target_w;
     tctx->target_h     = target_h;
     tctx->image_widget = image_widget;
-    g_idle_add(thumb_load_idle, tctx);
+
+    pthread_t tid;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&tid, &attr, thumb_worker_thread, tctx) != 0) {
+        free(tctx);
+    }
+    pthread_attr_destroy(&attr);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -686,7 +701,8 @@ static void show_folders_view(GuiCtx *ctx, GridView *grid)
         bool active = is_folder_active(ctx, grid, fpath);
         char *base = g_path_get_basename(fpath);
 
-        GtkWidget *card = gtk_button_new();
+        GtkWidget *card = gtk_event_box_new();
+        gtk_event_box_set_above_child(GTK_EVENT_BOX(card), FALSE);
         GtkStyleContext *sc = gtk_widget_get_style_context(card);
         gtk_style_context_add_class(sc, "folder-card");
         if (active) {
@@ -695,7 +711,7 @@ static void show_folders_view(GuiCtx *ctx, GridView *grid)
         gtk_widget_set_size_request(card, 150, 115);
         g_object_set_data(G_OBJECT(card), "grid", grid);
         g_object_set_data(G_OBJECT(card), "fidx", GINT_TO_POINTER(i));
-        g_signal_connect(card, "clicked", G_CALLBACK(on_folder_card_clicked), ctx);
+        g_signal_connect(card, "button-press-event", G_CALLBACK(on_folder_card_button_press), ctx);
 
         GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
         gtk_container_add(GTK_CONTAINER(card), vbox);
@@ -1080,14 +1096,18 @@ static void on_back_btn_clicked(GtkButton *button, gpointer user_data)
     }
 }
 
-static void on_folder_card_clicked(GtkButton *button, gpointer user_data)
+static gboolean on_folder_card_button_press(GtkWidget *widget, GdkEventButton *event, gpointer user_data)
 {
-    GuiCtx *ctx = (GuiCtx *)user_data;
-    GridView *grid = (GridView *)g_object_get_data(G_OBJECT(button), "grid");
-    int fidx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "fidx"));
-    if (ctx && grid) {
-        open_folder_view(ctx, grid, fidx);
+    if (event->type == GDK_BUTTON_PRESS && event->button == GDK_BUTTON_PRIMARY) {
+        GuiCtx *ctx = (GuiCtx *)user_data;
+        GridView *grid = (GridView *)g_object_get_data(G_OBJECT(widget), "grid");
+        int fidx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "fidx"));
+        if (ctx && grid) {
+            open_folder_view(ctx, grid, fidx);
+            return GDK_EVENT_STOP;
+        }
     }
+    return GDK_EVENT_PROPAGATE;
 }
 
 static void on_add_folder_btn_clicked(GtkButton *button, gpointer user_data)
