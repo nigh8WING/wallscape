@@ -1,7 +1,7 @@
-# Project Context: Live & Static Wallpaper Studio
+# Project Context: WallScape
 
 ## 1. Overview & Purpose
-**Live & Static Wallpaper Studio** is a high-performance, lightweight, hardware-accelerated desktop wallpaper manager and gallery studio written in pure **C (C11)**.
+**WallScape** is a high-performance, lightweight, hardware-accelerated desktop wallpaper manager and gallery studio written in pure **C (C11)**.
 
 - **Primary Target**: Zorin OS 18 & Zorin OS 17 (Ubuntu 24.04 / 22.04 LTS, GNOME 46 / Mutter, x86_64).
 - **Core Functionality**:
@@ -13,9 +13,12 @@
   - **Active State Indicator**: Overlay green checkmark badge (`✔ Active`) with an active green glowing border.
   - **Interactive Confirmation Dialogs**: Asks for confirmation before turning ON or turning OFF wallpapers.
   - **Zero Memory Leaks & Zero-CPU Idle Mode**: Strict resource lifecycle management and condition-variable sleeping when idle/paused.
-  - **Minimal SVG Branding**: Clean dark squircle with flat monitor and glowing landscape logo in `assets/live-wallpaper.svg`.
+  - **Polished Card-Stack SVG Branding**: Sleek dark vector logo with layered cards, gradient wallpaper, and play badge in `assets/live-wallpaper.svg`.
   - **Persistent State**: Automatically remembers and restores both live video and static image folders across sessions in `~/.config/live-wallpaper/config.txt`.
-- **Cost**: 100% Free & Open Source, utilizing only standard Ubuntu repository packages.
+  - **One-Click Native Debian Packaging (.deb)**: Integrated CPack Debian generator (`wallscape-1.0.0-Linux.deb`) for double-click installation via Zorin OS App Center.
+  - **Automatic In-App Updates**: Background updater querying GitHub Releases API with 1-click update download and installation.
+  - **Automated CI/CD Workflows**: GitHub Actions pipelines for automated compilation, packaging, and GitHub Release asset creation on Git tag push.
+- **Cost**: 100% Free & Open Source, utilizing standard Ubuntu repository packages.
 
 ---
 
@@ -45,11 +48,12 @@
 │                       Main Thread (GTK3 - Wayland)                          │
 │  ┌─────────────────────────┬─────────────────────────────────────────────┐  │
 │  │      Left Sidebar       │       GtkStack Studio Pages                 │  │
-│  │   [Logo] Wallpaper      │  1. Live Wallpaper Grid (130x75 tiles)      │  │
+│  │   [Logo] WallScape      │  1. Live Wallpaper Grid (130x75 tiles)      │  │
 │  │   [🎬 Live Wallpapers]  │  2. Static Wallpaper Grid (130x75 tiles)    │  │
 │  │   [🖼️ Static Wallpapers]│  - Empty-State Placeholders                 │  │
-│  │                         │  - Active Badges (✔ Active)                 │  │
-│  │                         │  - Confirmation Modals: Turn ON / OFF       │  │
+│  │   --------------------  │  - Active Badges (✔ Active)                 │  │
+│  │   v1.0.0                │  - Confirmation Modals: Turn ON / OFF       │  │
+│  │   [Check for Updates]   │  - Update Notification Modal                │  │
 │  └─────────────────────────┴─────────────────────────────────────────────┘  │
 │                              │                                              │
 │         g_timeout_add() Render Timer (~60 FPS / 16ms)                       │
@@ -72,6 +76,12 @@
 │  - Seamless end-of-file seeking (infinite loop)                             │
 │  - Pthread condition-variable sleep when paused (0% CPU)                    │
 └─────────────────────────────────────────────────────────────────────────────┘
+                               ▲
+┌──────────────────────────────┴──────────────────────────────────────────────┐
+│                    Updater Background Thread (updater.c)                     │
+│  Checks GitHub API: GET /repos/nigh8WING/zorin18-livewallpaper/releases/latest│
+│  - Parses tag_name, compare semver, downloads .deb & launches installer      │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -80,25 +90,43 @@
 
 | Module | Source Files | Responsibilities |
 |---|---|---|
-| **Entry & Lifecycle** | `src/main.c` | Display environment setup, signal handling, arguments |
-| **GUI Control Panel** | `src/gui.c`, `src/gui.h` | Dual-tab sidebar, thumbnail grids, empty states, modals, idle restore |
-| **Wallpaper Surface** | `src/wallpaper.c`, `src/wallpaper.h` | SDL2 window, X11 desktop hints, XFixes click-through, rendering |
+| **Entry & Lifecycle** | `src/main.c` | Display environment setup, signal handling, CLI parsing (`--no-gui`, `-v`, `-h`) |
+| **GUI Control Panel** | `src/gui.c`, `src/gui.h` | Dual-tab sidebar, thumbnail grids, empty states, confirmation modals, updater UI |
+| **Auto-Updater** | `src/updater.c`, `src/updater.h` | Background GitHub Releases checker, semver compare, async `.deb` download & launch |
+| **Wallpaper Surface** | `src/wallpaper.c`, `src/wallpaper.h` | SDL2 window, X11 desktop hints, XFixes click-through, hardware rendering |
 | **Static Background** | `src/static_wallpaper.c`, `.h` | GNOME GSettings (`picture-uri`, `picture-uri-dark`) integration |
 | **Video Decoder** | `src/decoder.c`, `src/decoder.h` | Multi-threaded FFmpeg 6.1 decoding, frame pacing, infinite loop |
 | **Thumbnail Engine** | `src/thumbnail.c`, `src/thumbnail.h` | Video frame seeking/extraction + static image scaling (130x75) |
 | **Configuration** | `src/config.c`, `src/config.h` | Persistent key=value storage (`video_path`, `live_folder`, `static_folder`) |
 | **Common Data** | `src/common.c`, `src/common.h` | `VideoFrame`, `FrameQueue`, `AppState` |
-| **Branding Asset** | `assets/live-wallpaper.svg` | Minimal application logo |
+| **Branding Asset** | `assets/live-wallpaper.svg` | Layered card stack vector SVG application logo |
+| **CI/CD Pipelines** | `.github/workflows/ci.yml`, `release.yml` | Automated build testing and GitHub Release `.deb` publishing |
 
 ---
 
-## 5. Build & Run
+## 5. Build, Package & Run
 
 ```bash
-# Build
+# 1. Build locally
 cmake -B build -S .
 cmake --build build
 
-# Run
+# 2. Package as a .deb installer for Zorin OS
+cd build
+cpack -G DEB
+
+# 3. Run
 ./build/live-wallpaper
 ```
+
+---
+
+## 6. Release & Distribution Workflow
+
+```bash
+# Bump version in CMakeLists.txt and src/updater.h (e.g., 1.1.0)
+git tag v1.1.0
+git push origin v1.1.0
+```
+- GitHub Actions automatically compiles, builds `wallscape-1.1.0-Linux.deb`, and creates a GitHub Release with assets attached.
+- WallScape clients automatically detect the update on next launch and prompt the user with a 1-click update.
