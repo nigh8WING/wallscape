@@ -60,6 +60,13 @@ static const char *STUDIO_CSS =
 "    opacity: 0.50;"
 "    margin-bottom: 2px;"
 "}"
+".autostart-row {"
+"    padding: 4px 6px;"
+"    border-radius: 6px;"
+"    background-color: alpha(@theme_base_color, 0.30);"
+"    border: 1px solid alpha(@theme_fg_color, 0.08);"
+"    margin-bottom: 4px;"
+"}"
 ".update-btn {"
 "    border-radius: 6px;"
 "    padding: 5px 8px;"
@@ -299,6 +306,9 @@ struct GuiCtx {
     /* Update status */
     UpdateInfo    last_update_info;
 
+    /* Autostart */
+    GtkWidget    *autostart_switch;
+
     guint         render_timer_id;
     double        render_fps;       /* current render timer target FPS */
 };
@@ -308,6 +318,7 @@ static gboolean on_render_tick(gpointer user_data);
 static void on_back_btn_clicked(GtkButton *button, gpointer user_data);
 static void on_refresh_btn_clicked(GtkButton *button, gpointer user_data);
 static void on_add_folder_btn_clicked(GtkButton *button, gpointer user_data);
+static gboolean on_autostart_switch_state_set(GtkSwitch *widget, gboolean state, gpointer user_data);
 static gboolean on_folder_card_button_press(GtkWidget *widget, GdkEventButton *event, gpointer user_data);
 static void on_remove_folder_clicked(GtkWidget *button, gpointer user_data);
 static void on_live_card_clicked(GtkButton *button, gpointer user_data);
@@ -1535,18 +1546,26 @@ static void show_update_dialog(GuiCtx *ctx, const UpdateInfo *info)
     gtk_label_set_xalign(GTK_LABEL(desc_lbl), 0.0);
     gtk_box_pack_start(GTK_BOX(vbox), desc_lbl, FALSE, FALSE, 0);
 
-    if (info->release_notes[0]) {
-        GtkWidget *notes_scr = gtk_scrolled_window_new(NULL, NULL);
-        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(notes_scr), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-        gtk_widget_set_size_request(notes_scr, -1, 90);
+    /* What's New in this update header */
+    GtkWidget *whats_new_lbl = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(whats_new_lbl), "<b>✨ What's New in this update:</b>");
+    gtk_label_set_xalign(GTK_LABEL(whats_new_lbl), 0.0);
+    gtk_box_pack_start(GTK_BOX(vbox), whats_new_lbl, FALSE, FALSE, 0);
 
-        GtkWidget *notes_lbl = gtk_label_new(info->release_notes);
-        gtk_label_set_line_wrap(GTK_LABEL(notes_lbl), TRUE);
-        gtk_label_set_xalign(GTK_LABEL(notes_lbl), 0.0);
-        gtk_label_set_yalign(GTK_LABEL(notes_lbl), 0.0);
-        gtk_container_add(GTK_CONTAINER(notes_scr), notes_lbl);
-        gtk_box_pack_start(GTK_BOX(vbox), notes_scr, TRUE, TRUE, 0);
-    }
+    GtkWidget *notes_scr = gtk_scrolled_window_new(NULL, NULL);
+    gtk_style_context_add_class(gtk_widget_get_style_context(notes_scr), "gallery-scroll");
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(notes_scr), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(notes_scr, -1, 100);
+
+    const char *notes_text = (info->release_notes[0])
+                             ? info->release_notes
+                             : "• In-Folder Refresh button to dynamically detect and add new files.\n• Universal GPU Hardware Acceleration (VA-API, CUDA, Vulkan, DRM).\n• Fast user-space in-place auto-update with seamless auto-restart.\n• Performance improvements and bug fixes.";
+    GtkWidget *notes_lbl = gtk_label_new(notes_text);
+    gtk_label_set_line_wrap(GTK_LABEL(notes_lbl), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(notes_lbl), 0.0);
+    gtk_label_set_yalign(GTK_LABEL(notes_lbl), 0.0);
+    gtk_container_add(GTK_CONTAINER(notes_scr), notes_lbl);
+    gtk_box_pack_start(GTK_BOX(vbox), notes_scr, TRUE, TRUE, 0);
 
     gtk_widget_show_all(dialog);
     gint res = gtk_dialog_run(GTK_DIALOG(dialog));
@@ -1802,6 +1821,26 @@ static void on_indicator_stop_activate(GtkMenuItem *item, gpointer user_data)
     stop_live_wallpaper(ctx);
 }
 
+static void on_indicator_autostart_toggled(GtkCheckMenuItem *item, gpointer user_data)
+{
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    gboolean active = gtk_check_menu_item_get_active(item);
+    autostart_set_enabled(active);
+    if (ctx && ctx->autostart_switch) {
+        gtk_switch_set_active(GTK_SWITCH(ctx->autostart_switch), active);
+    }
+    gui_set_status(ctx, active ? "⚙️ Autostart on boot enabled." : "⚙️ Autostart on boot disabled.");
+}
+
+static gboolean on_autostart_switch_state_set(GtkSwitch *widget, gboolean state, gpointer user_data)
+{
+    (void)widget;
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    autostart_set_enabled(state);
+    gui_set_status(ctx, state ? "⚙️ Autostart on boot enabled." : "⚙️ Autostart on boot disabled.");
+    return FALSE;
+}
+
 static void on_indicator_quit_activate(GtkMenuItem *item, gpointer user_data)
 {
     (void)item;
@@ -1831,6 +1870,11 @@ static GtkWidget *build_tray_menu(GuiCtx *ctx)
     GtkWidget *item_stop = gtk_menu_item_new_with_label("Turn Off Live Wallpaper");
     g_signal_connect(item_stop, "activate", G_CALLBACK(on_indicator_stop_activate), ctx);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_stop);
+
+    GtkWidget *item_autostart = gtk_check_menu_item_new_with_label("Start on Laptop Boot");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item_autostart), autostart_is_enabled());
+    g_signal_connect(item_autostart, "toggled", G_CALLBACK(on_indicator_autostart_toggled), ctx);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_autostart);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 
@@ -2114,9 +2158,28 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
     GtkWidget *sidebar_spacer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_pack_start(GTK_BOX(sidebar), sidebar_spacer, TRUE, TRUE, 0);
 
-    /* Sidebar Footer: Version and Update Checker */
+    /* Sidebar Footer: Autostart, Version and Update Checker */
     GtkWidget *side_footer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gtk_box_pack_end(GTK_BOX(sidebar), side_footer, FALSE, FALSE, 0);
+
+    /* Autostart on Boot Toggle Row */
+    GtkWidget *autostart_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_style_context_add_class(gtk_widget_get_style_context(autostart_box), "autostart-row");
+    gtk_widget_set_tooltip_text(autostart_box, "Automatically launch WallScape on system boot/login");
+
+    GtkWidget *autostart_icon = gtk_image_new_from_icon_name("system-run-symbolic", GTK_ICON_SIZE_MENU);
+    gtk_box_pack_start(GTK_BOX(autostart_box), autostart_icon, FALSE, FALSE, 0);
+
+    GtkWidget *autostart_lbl = gtk_label_new("Start on Boot");
+    gtk_style_context_add_class(gtk_widget_get_style_context(autostart_lbl), "sidebar-subtitle");
+    gtk_label_set_xalign(GTK_LABEL(autostart_lbl), 0.0);
+    gtk_box_pack_start(GTK_BOX(autostart_box), autostart_lbl, TRUE, TRUE, 0);
+
+    ctx->autostart_switch = gtk_switch_new();
+    gtk_switch_set_active(GTK_SWITCH(ctx->autostart_switch), autostart_is_enabled());
+    g_signal_connect(ctx->autostart_switch, "state-set", G_CALLBACK(on_autostart_switch_state_set), ctx);
+    gtk_box_pack_end(GTK_BOX(autostart_box), ctx->autostart_switch, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(side_footer), autostart_box, FALSE, FALSE, 0);
 
     GtkWidget *ver_lbl = gtk_label_new("v" WALLSCAPE_CURRENT_VERSION);
     gtk_style_context_add_class(gtk_widget_get_style_context(ver_lbl), "sidebar-version");

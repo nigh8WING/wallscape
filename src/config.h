@@ -54,4 +54,10 @@ bool config_load_static_path(char *path_out, int max_len);
 /* Save the last-used active static wallpaper path. */
 bool config_save_static_path(const char *path);
 
+/* Check if autostart on system boot/login is currently enabled. */
+bool autostart_is_enabled(void);
+
+/* Enable or disable autostart on system boot/login (~/.config/autostart). */
+bool autostart_set_enabled(bool enabled);
+
 #endif /* LIVE_WALLPAPER_CONFIG_H */

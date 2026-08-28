@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <errno.h>
 
@@ -245,6 +246,73 @@ bool config_load_static_path(char *path_out, int max_len)
 bool config_save_static_path(const char *path)
 {
     return config_save_key("static_path=", path);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Autostart Management (~/.config/autostart/live-wallpaper.desktop)
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+static bool get_autostart_desktop_path(char *out, size_t out_sz)
+{
+    const char *home = getenv("HOME");
+    if (!home || !home[0]) return false;
+    snprintf(out, out_sz, "%s/.config/autostart/live-wallpaper.desktop", home);
+    return true;
+}
+
+bool autostart_is_enabled(void)
+{
+    char path[LW_MAX_PATH];
+    if (!get_autostart_desktop_path(path, sizeof(path))) return false;
+    if (access(path, F_OK) != 0) return false;
+
+    FILE *fp = fopen(path, "r");
+    if (!fp) return false;
+
+    char line[256];
+    bool enabled = true;
+    while (fgets(line, sizeof(line), fp)) {
+        if (strncmp(line, "X-GNOME-Autostart-enabled=false", 31) == 0 ||
+            strncmp(line, "Hidden=true", 11) == 0) {
+            enabled = false;
+            break;
+        }
+    }
+    fclose(fp);
+    return enabled;
+}
+
+bool autostart_set_enabled(bool enabled)
+{
+    char path[LW_MAX_PATH];
+    if (!get_autostart_desktop_path(path, sizeof(path))) return false;
+
+    if (!enabled) {
+        remove(path);
+        return true;
+    }
+
+    const char *home = getenv("HOME");
+    char dir[LW_MAX_PATH];
+    snprintf(dir, sizeof(dir), "%s/.config/autostart", home);
+    mkdir(dir, 0755);
+
+    FILE *fp = fopen(path, "w");
+    if (!fp) return false;
+
+    fprintf(fp,
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=WallScape\n"
+            "Comment=Live Video & Static Desktop Wallpaper Studio\n"
+            "Exec=live-wallpaper --no-gui\n"
+            "Icon=live-wallpaper\n"
+            "Terminal=false\n"
+            "Categories=Utility;Graphics;Settings;\n"
+            "X-GNOME-Autostart-enabled=true\n"
+            "StartupNotify=false\n");
+    fclose(fp);
+    return true;
 }
 
 

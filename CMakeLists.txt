@@ -81,7 +81,7 @@ install(FILES assets/live-wallpaper.png
 set(CPACK_PACKAGE_NAME "wallscape")
 set(CPACK_PACKAGE_VENDOR "WallScape")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "WallScape - Live Video & Static Desktop Wallpaper Manager for Zorin OS")
-set(CPACK_PACKAGE_VERSION "1.6")
+set(CPACK_PACKAGE_VERSION "1.7")
 set(CPACK_GENERATOR "DEB")
 
 # Debian package metadata
