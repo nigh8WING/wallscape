@@ -79,6 +79,29 @@ jobs:
             echo "Tag $TAG does not exist — will create release."
           fi
 
+      - name: Extract Release Notes from CHANGELOG
+        if: >
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          steps.tag_check.outputs.exists == 'false'
+        run: |
+          python3 -c "
+          import re
+          ver = '${{ steps.version.outputs.version }}'
+          try:
+              with open('CHANGELOG.md', 'r') as f:
+                  content = f.read()
+              m = re.search(r'##\s*\[?' + re.escape(ver) + r'\]?.*?\n(.*?)(?=\n##|\Z)', content, re.DOTALL)
+              if m and m.group(1).strip():
+                  notes = m.group(1).strip()
+              else:
+                  notes = '• General performance enhancements and bug fixes.'
+          except Exception as e:
+              notes = '• General performance enhancements and bug fixes.'
+          with open('/tmp/release_notes.md', 'w') as f:
+              f.write(notes + '\n')
+          "
+
       - name: Create & Push Git Tag
         if: >
           github.event_name == 'push' &&
@@ -99,7 +122,7 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: "WallScape ${{ steps.version.outputs.tag }}"
+          body_path: /tmp/release_notes.md
           files: build/*.deb
-          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

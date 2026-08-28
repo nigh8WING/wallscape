@@ -89,15 +89,23 @@ static bool extract_json_string(const char *json, const char *key, char *out, si
     while (*pos && *pos != '"' && i < out_sz - 1) {
         if (*pos == '\\' && *(pos + 1)) {
             pos++;
-            if (*pos == 'n') out[i] = '\n';
-            else if (*pos == 'r') out[i] = '\r';
-            else if (*pos == 't') out[i] = '\t';
-            else out[i] = *pos;
+            if (*pos == 'n') {
+                out[i++] = '\n';
+            } else if (*pos == 'r') {
+                /* skip CR */
+            } else if (*pos == 't') {
+                out[i++] = '\t';
+            } else if (*pos == '"') {
+                out[i++] = '"';
+            } else if (*pos == '\\') {
+                out[i++] = '\\';
+            } else {
+                out[i++] = *pos;
+            }
         } else {
-            out[i] = *pos;
+            out[i++] = *pos;
         }
         pos++;
-        i++;
     }
     out[i] = '\0';
     return i > 0;
@@ -212,6 +220,15 @@ static void *updater_check_thread(void *arg)
     extract_json_string(buf, "html_url", task->info.release_url, sizeof(task->info.release_url));
     extract_json_string(buf, "body", task->info.release_notes, sizeof(task->info.release_notes));
     extract_deb_download_url(buf, task->info.deb_download_url, sizeof(task->info.deb_download_url));
+
+    /* If release body is empty or generic 'Full Changelog', provide clear feature notes */
+    if (task->info.release_notes[0] == '\0' || strncmp(task->info.release_notes, "**Full Changelog**:", 19) == 0) {
+        snprintf(task->info.release_notes, sizeof(task->info.release_notes),
+                 "• 🚀 Start on Boot: Option to launch WallScape silently on system login.\n"
+                 "• 🔄 In-Folder Refresh: Rescan folder to dynamically detect and add new wallpapers.\n"
+                 "• ⚡ Hardware Acceleration: Universal GPU decoding (VA-API, CUDA, Vulkan, DRM).\n"
+                 "• 📦 Seamless in-place auto-update with auto-restart.");
+    }
 
     /* Compare version */
     if (updater_compare_versions(task->info.latest_version, task->info.current_version) > 0) {
