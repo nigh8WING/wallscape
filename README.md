@@ -35,8 +35,8 @@ sudo apt update && sudo apt install -y build-essential cmake pkg-config \
   libsdl2-dev libgtk-3-dev libx11-dev
 
 # 2. Clone and build
-git clone https://github.com/nigh8WING/zorin18-livewallpaper.git
-cd zorin18-livewallpaper
+git clone https://github.com/nigh8WING/wallscape.git
+cd wallscape
 cmake -B build && cmake --build build
 
 # 3. Launch

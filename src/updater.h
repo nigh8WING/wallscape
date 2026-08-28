@@ -11,7 +11,7 @@
 #include <gtk/gtk.h>
 
 #define WALLSCAPE_CURRENT_VERSION "1.0.0"
-#define WALLSCAPE_GITHUB_REPO     "nigh8WING/zorin18-livewallpaper"
+#define WALLSCAPE_GITHUB_REPO     "nigh8WING/wallscape"
 
 typedef struct {
     bool update_available;

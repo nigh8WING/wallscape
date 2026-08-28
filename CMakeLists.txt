@@ -82,7 +82,7 @@ set(CPACK_GENERATOR "DEB")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "WallScape Developer <support@wallscape.local>")
 set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
-set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/nigh8WING/zorin18-livewallpaper")
+set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/nigh8WING/wallscape")
 
 # Automatically calculate shared library dependencies (FFmpeg, GTK3, SDL2, X11)
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
