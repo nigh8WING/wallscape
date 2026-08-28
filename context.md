@@ -8,16 +8,20 @@
   - **Dual-Mode Left Sidebar**:
     - **🎬 Live Wallpapers Tab**: High-performance video wallpapers (`.mp4`, `.mkv`, `.webm`, `.avi`, `.mov`) playing behind desktop icons with SDL2 hardware acceleration and infinite looping.
     - **🖼️ Static Wallpapers Tab**: High-resolution static image gallery (`.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, `.svg`, `.gif`) natively integrated with GNOME's `GSettings`.
-  - **Compact 130x75 Thumbnail Grid**: Responsive card grid (`GtkFlowBox`) with video frame extraction and image preview scaling.
+  - **Compact 130x75 Responsive Thumbnail Grid**: Card grid (`GtkFlowBox`) with non-blocking asynchronous thumbnail extraction (`g_idle_add`) and aspect-ratio preservation (letterboxing/pillarboxing for portrait videos).
+  - **System Tray & Action Center Integration**: Background execution via `GtkStatusIcon` with right-click menu (Show/Hide, Turn Off, Quit) and taskbar suppression (`skip_taskbar_hint`).
+  - **Dynamic FPS-Matched Render Loop**: Automatically synchronizes GTK timer tick intervals to video stream frame rate (e.g. ~41ms for 24fps, ~16ms for 60fps) to eliminate wasted CPU cycles.
+  - **Multi-Desktop Sticky Rendering**: Runtime EWMH `_NET_WM_STATE_STICKY` + `_NET_WM_DESKTOP = 0xFFFFFFFF` ClientMessage signaling so live wallpapers persist across all virtual workspaces (Super+W / workspace switching).
+  - **Seamless Video Switching**: Independent `decoder_quit` thread lifecycle state to allow instant video switching without affecting overall application runtime.
   - **Empty-State UI**: Centered placeholder graphic and instructions when no folder has been imported.
   - **Active State Indicator**: Overlay green checkmark badge (`✔ Active`) with an active green glowing border.
   - **Interactive Confirmation Dialogs**: Asks for confirmation before turning ON or turning OFF wallpapers.
   - **Zero Memory Leaks & Zero-CPU Idle Mode**: Strict resource lifecycle management and condition-variable sleeping when idle/paused.
   - **Polished Card-Stack SVG Branding**: Sleek dark vector logo with layered cards, gradient wallpaper, and play badge in `assets/live-wallpaper.svg`.
   - **Persistent State**: Automatically remembers and restores both live video and static image folders across sessions in `~/.config/live-wallpaper/config.txt`.
-  - **One-Click Native Debian Packaging (.deb)**: Integrated CPack Debian generator (`wallscape-1.0.0-Linux.deb`) for double-click installation via Zorin OS App Center.
+  - **One-Click Native Debian Packaging (.deb)**: Integrated CPack Debian generator (`wallscape-1.1.0-Linux.deb`) for double-click installation via Zorin OS App Center.
   - **Automatic In-App Updates**: Background updater querying GitHub Releases API with 1-click update download and installation.
-  - **Automated CI/CD Workflows**: GitHub Actions pipelines for automated compilation, packaging, and GitHub Release asset creation on Git tag push.
+  - **Automated Commit-Triggered CI/CD**: GitHub Actions pipeline that automatically detects version bumps in `CMakeLists.txt`, builds `.deb` packages, creates Git tags, and publishes GitHub Releases on push to `main`.
 - **Cost**: 100% Free & Open Source, utilizing standard Ubuntu repository packages.
 
 ---
@@ -29,14 +33,16 @@
   - Zorin OS 18 uses GNOME 46 Wayland with the `zorin-desktop-icons` (DING) extension managing desktop icons.
   - Desktop icons need to be fully visible and interactive on top of the live video wallpaper.
   - GUI window minimize actions must never minimize other unrelated application windows.
+  - Wallpaper must remain stacked underneath windows across all virtual workspace switches.
 - **Solution**:
   1. **Hybrid Display Architecture**:
      - GTK3 control panel runs on **native Wayland** (`GDK_BACKEND=wayland`). Its window management actions (`xdg_toplevel` minimize/restore) are isolated to itself.
      - SDL2 wallpaper surface runs via **XWayland** (`SDL_VIDEODRIVER=x11`), allowing bottom-layer desktop surface stacking.
-  2. **Layering & Surface Management**:
+  2. **Layering, Multi-Desktop & Surface Management**:
      - `_NET_WM_WINDOW_TYPE_DESKTOP` + `_NET_WM_STATE_BELOW` positions the wallpaper in Mutter's `META_LAYER_DESKTOP`, strictly beneath taskbar panels, docks (`META_LAYER_DOCK`), and normal application windows.
+     - `_NET_WM_STATE_STICKY` + `_NET_WM_STATE_SKIP_TASKBAR` + `_NET_WM_STATE_SKIP_PAGER` sent via EWMH `ClientMessage` to the root window upon map ensuring Mutter applies sticky state dynamically across all virtual workspaces.
      - `override_redirect` is disabled to prevent covering the taskbar and panel.
-     - `XLowerWindow` is called strictly once upon showing to ensure stable stacking.
+     - `XLowerWindow` is called upon showing to ensure stable stacking at the bottom of the layer.
      - `WM_CLIENT_LEADER` is cleared from the SDL window to prevent window-grouping side effects.
 
 ---
@@ -50,36 +56,38 @@
 │  │      Left Sidebar       │       GtkStack Studio Pages                 │  │
 │  │   [Logo] WallScape      │  1. Live Wallpaper Grid (130x75 tiles)      │  │
 │  │   [🎬 Live Wallpapers]  │  2. Static Wallpaper Grid (130x75 tiles)    │  │
-│  │   [🖼️ Static Wallpapers]│  - Empty-State Placeholders                 │  │
+│  │   [🖼️ Static Wallpapers]│  - Async Lazy-Loaded Thumbnails             │  │
 │  │   --------------------  │  - Active Badges (✔ Active)                 │  │
-│  │   v1.0.0                │  - Confirmation Modals: Turn ON / OFF       │  │
+│  │   v1.1.0                │  - Confirmation Modals: Turn ON / OFF       │  │
 │  │   [Check for Updates]   │  - Update Notification Modal                │  │
 │  └─────────────────────────┴─────────────────────────────────────────────┘  │
-│                              │                                              │
-│         g_timeout_add() Render Timer (~60 FPS / 16ms)                       │
-│                              │                                              │
-│  ┌───────────────────────────▼───────────────────────────────────────────┐  │
+│                                │                                            │
+│         [System Tray / Action Center (GtkStatusIcon)]                       │
+│         [Dynamic FPS Timer: 1000/fps ms (16ms @ 60fps, 41ms @ 24fps)]       │
+│                                │                                            │
+│  ┌─────────────────────────────▼─────────────────────────────────────────┐  │
 │  │             SDL2 Wallpaper Surface (wallpaper.c - XWayland)           │  │
 │  │  - _NET_WM_WINDOW_TYPE_DESKTOP & _NET_WM_STATE_BELOW                  │  │
-│  │  - _NET_WM_DESKTOP = 0xFFFFFFFF (sticky across all workspaces)       │  │
+│  │  - _NET_WM_STATE_STICKY & _NET_WM_DESKTOP = 0xFFFFFFFF (All Desktops) │  │
 │  │  - Input disabled (XWMHints.input = False)                            │  │
 │  │  - Texture: Streaming SDL_PIXELFORMAT_IYUV (YUV420P)                  │  │
 │  │  - Scaling: Aspect-ratio cover-crop (no distortion)                   │  │
 │  │  - Managed in META_LAYER_DESKTOP (below taskbar and normal windows)   │  │
-│  └───────────────────────────▲───────────────────────────────────────────┘  │
-└──────────────────────────────┼──────────────────────────────────────────────┘
-                               │ pop frame (non-blocking)
-┌──────────────────────────────┴──────────────────────────────────────────────┐
+│  └─────────────────────────────▲─────────────────────────────────────────┘  │
+└────────────────────────────────┼────────────────────────────────────────────┘
+                                 │ pop frame (non-blocking)
+┌────────────────────────────────┴────────────────────────────────────────────┐
 │                    Decoder Background Thread (decoder.c)                     │
 │  avformat_open_input() → avcodec_send_packet() → avcodec_receive_frame()    │
-│  → sws_scale() [YUV420P] → Thread-Safe FrameQueue (Ring Buffer)             │
+│  → sws_scale() [YUV420P, 32-byte stride] → Thread-Safe FrameQueue (8 slots) │
 │  - Seamless end-of-file seeking (infinite loop)                             │
+│  - Independent atomic `decoder_quit` flag for seamless video switching      │
 │  - Pthread condition-variable sleep when paused (0% CPU)                    │
 └─────────────────────────────────────────────────────────────────────────────┘
-                               ▲
-┌──────────────────────────────┴──────────────────────────────────────────────┐
+                                 ▲
+┌────────────────────────────────┴────────────────────────────────────────────┐
 │                    Updater Background Thread (updater.c)                     │
-│  Checks GitHub API: GET /repos/nigh8WING/wallscape/releases/latest            │
+│  Checks GitHub API: GET /repos/nigh8WING/wallscape/releases/latest          │
 │  - Parses tag_name, compare semver, downloads .deb & launches installer      │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -91,16 +99,16 @@
 | Module | Source Files | Responsibilities |
 |---|---|---|
 | **Entry & Lifecycle** | `src/main.c` | Display environment setup, signal handling, CLI parsing (`--no-gui`, `-v`, `-h`) |
-| **GUI Control Panel** | `src/gui.c`, `src/gui.h` | Dual-tab sidebar, thumbnail grids, empty states, confirmation modals, updater UI |
+| **GUI Control Panel** | `src/gui.c`, `src/gui.h` | Dual-tab sidebar, thumbnail grids, empty states, confirmation modals, updater UI, System Tray icon (`GtkStatusIcon`), FPS-adaptive render timer |
 | **Auto-Updater** | `src/updater.c`, `src/updater.h` | Background GitHub Releases checker, semver compare, async `.deb` download & launch |
-| **Wallpaper Surface** | `src/wallpaper.c`, `src/wallpaper.h` | SDL2 window, X11 desktop hints, XFixes click-through, hardware rendering |
+| **Wallpaper Surface** | `src/wallpaper.c`, `src/wallpaper.h` | SDL2 window, X11 EWMH desktop/sticky ClientMessage hints, hardware rendering |
 | **Static Background** | `src/static_wallpaper.c`, `.h` | GNOME GSettings (`picture-uri`, `picture-uri-dark`) integration |
-| **Video Decoder** | `src/decoder.c`, `src/decoder.h` | Multi-threaded FFmpeg 6.1 decoding, frame pacing, infinite loop |
-| **Thumbnail Engine** | `src/thumbnail.c`, `src/thumbnail.h` | Video frame seeking/extraction + static image scaling (130x75) |
+| **Video Decoder** | `src/decoder.c`, `src/decoder.h` | Multi-threaded FFmpeg 6.1 decoding, frame pacing, infinite loop, isolated thread lifecycle (`decoder_quit`) |
+| **Thumbnail Engine** | `src/thumbnail.c`, `src/thumbnail.h` | Aspect-ratio preserving video frame seeking/extraction (letterbox/pillarbox) + static image scaling (130x75) |
 | **Configuration** | `src/config.c`, `src/config.h` | Persistent key=value storage (`video_path`, `live_folder`, `static_folder`) |
-| **Common Data** | `src/common.c`, `src/common.h` | `VideoFrame`, `FrameQueue`, `AppState` |
+| **Common Data** | `src/common.c`, `src/common.h` | `VideoFrame`, `FrameQueue` (8-frame ring buffer), `AppState` (atomic synchronization) |
 | **Branding Asset** | `assets/live-wallpaper.svg` | Layered card stack vector SVG application logo |
-| **CI/CD Pipelines** | `.github/workflows/ci.yml`, `release.yml` | Automated build testing and GitHub Release `.deb` publishing |
+| **CI/CD Pipelines** | `.github/workflows/ci.yml`, `release.yml` | Automated build, packaging (.deb), auto-tagging, and GitHub Release creation on push |
 
 ---
 
@@ -109,7 +117,7 @@
 ```bash
 # 1. Build locally
 cmake -B build -S .
-cmake --build build
+cmake --build build -- -j$(nproc)
 
 # 2. Package as a .deb installer for Zorin OS
 cd build
@@ -123,10 +131,30 @@ cpack -G DEB
 
 ## 6. Release & Distribution Workflow
 
+### Automated Releases on Push
+1. Bump version in `CMakeLists.txt` (`set(CPACK_PACKAGE_VERSION "X.Y.Z")`) and `src/updater.h` (`#define WALLSCAPE_CURRENT_VERSION "X.Y.Z"`).
+2. Commit and push directly to `main`:
+   ```bash
+   git commit -am "chore: bump version to vX.Y.Z"
+   git push origin main
+   ```
+3. GitHub Actions (`.github/workflows/ci.yml`):
+   - Compiles and builds `wallscape-X.Y.Z-Linux.deb`.
+   - Automatically tags `vX.Y.Z` on Git.
+   - Publishes a new GitHub Release with the `.deb` package attached and generated release notes.
+4. Installed WallScape clients automatically detect the update on next launch and prompt the user with a 1-click update.
+
+---
+
+## 7. Package Management & Uninstallation
+
 ```bash
-# Bump version in CMakeLists.txt and src/updater.h (e.g., 1.1.0)
-git tag v1.1.0
-git push origin v1.1.0
+# Remove package
+sudo apt remove wallscape
+# or
+sudo dpkg -r wallscape
+
+# Purge configurations
+sudo apt purge wallscape
 ```
-- GitHub Actions automatically compiles, builds `wallscape-1.1.0-Linux.deb`, and creates a GitHub Release with assets attached.
-- WallScape clients automatically detect the update on next launch and prompt the user with a 1-click update.
+
