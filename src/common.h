@@ -146,12 +146,13 @@ typedef struct {
     atomic_bool quit;           /* true → application is shutting down        */
     atomic_bool paused;         /* true → playback is paused                  */
     atomic_bool playing;        /* true → a video is loaded and active        */
+    atomic_bool decoder_ready;  /* true → decoder opened stream, metadata set */
 
     /* ── Current video metadata ── */
     char   video_path[LW_MAX_PATH];
-    int    video_width;
-    int    video_height;
-    double video_fps;           /* frames per second                          */
+    atomic_int video_width;     /* atomic: written by decoder, read by GUI    */
+    atomic_int video_height;    /* atomic: written by decoder, read by GUI    */
+    double video_fps;           /* frames per second (set before ready flag)  */
 
     /* ── Screen / display info ── */
     int    screen_width;

@@ -15,7 +15,7 @@
 static gboolean is_image_ext(const char *path)
 {
     if (!path) return FALSE;
-    const char *exts[] = { ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".svg", NULL };
+    const char *exts[] = { ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".svg", ".gif", NULL };
     size_t len = strlen(path);
     for (int i = 0; exts[i] != NULL; i++) {
         size_t elen = strlen(exts[i]);

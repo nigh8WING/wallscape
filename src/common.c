@@ -82,6 +82,11 @@ bool frame_queue_push(FrameQueue *q,
         if (!slot->y || !slot->u || !slot->v) {
             fprintf(stderr, "[frame_queue] allocation failed for %dx%d frame\n",
                     width, height);
+            /* Free any partially-allocated buffers to avoid a leak */
+            free(slot->y); slot->y = NULL;
+            free(slot->u); slot->u = NULL;
+            free(slot->v); slot->v = NULL;
+            slot->width = 0; slot->height = 0;
             pthread_mutex_unlock(&q->mutex);
             return false;
         }
@@ -154,7 +159,12 @@ void frame_queue_flush(FrameQueue *q)
     q->read_idx  = 0;
     q->write_idx = 0;
     q->count     = 0;
-    /* Note: we keep the slot buffers allocated for reuse. */
+    /* Zero slot dimensions so the next video's first push triggers realloc.
+     * The underlying buffers are kept allocated for potential reuse. */
+    for (int i = 0; i < FRAME_QUEUE_CAPACITY; i++) {
+        q->frames[i].width  = 0;
+        q->frames[i].height = 0;
+    }
     pthread_cond_broadcast(&q->cond_push);
     pthread_mutex_unlock(&q->mutex);
 }
@@ -188,6 +198,9 @@ void app_state_init(AppState *s)
     atomic_store(&s->quit, false);
     atomic_store(&s->paused, false);
     atomic_store(&s->playing, false);
+    atomic_store(&s->decoder_ready, false);
+    atomic_store(&s->video_width, 0);
+    atomic_store(&s->video_height, 0);
 
     frame_queue_init(&s->queue);
 

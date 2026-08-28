@@ -74,6 +74,28 @@ bool static_wallpaper_apply(const char *image_path)
     return true;
 }
 
+bool static_wallpaper_clear(void)
+{
+    GSettingsSchemaSource *source = g_settings_schema_source_get_default();
+    if (!source) return false;
+
+    GSettingsSchema *schema = g_settings_schema_source_lookup(source, "org.gnome.desktop.background", TRUE);
+    if (!schema) return false;
+    g_settings_schema_unref(schema);
+
+    GSettings *settings = g_settings_new("org.gnome.desktop.background");
+    if (!settings) return false;
+
+    /* Reset picture URIs to empty — GNOME falls back to its default solid colour. */
+    g_settings_set_string(settings, "picture-uri", "");
+    g_settings_set_string(settings, "picture-uri-dark", "");
+    g_settings_sync();
+
+    g_object_unref(settings);
+    fprintf(stderr, "[static_wallpaper] Cleared static wallpaper (reset GSettings).\n");
+    return true;
+}
+
 bool static_wallpaper_get_current(char *out_path, int max_len)
 {
     if (!out_path || max_len <= 0) return false;

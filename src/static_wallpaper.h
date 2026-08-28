@@ -29,4 +29,11 @@ bool static_wallpaper_apply(const char *image_path);
  */
 bool static_wallpaper_get_current(char *out_path, int max_len);
 
+/*
+ * Clear the GNOME desktop background by resetting picture-uri and picture-uri-dark
+ * in GSettings to empty strings, restoring the system default.
+ * Returns true on success.
+ */
+bool static_wallpaper_clear(void);
+
 #endif /* LIVE_WALLPAPER_STATIC_WALLPAPER_H */
