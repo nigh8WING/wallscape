@@ -2201,9 +2201,10 @@ static gboolean on_splash_draw(GtkWidget *widget, cairo_t *cr, gpointer user_dat
     /* 2. Back card (still image, most rotated): translate(196,291) rotate(-16) */
     {
         double t_local = t - 0.0;
-        double p = CLAMP(t_local / 0.6, 0.0, 1.0);
-        double opacity = p;
-        double s = 0.6 + 0.4 * p;
+        double p = CLAMP(t_local / 0.85, 0.0, 1.0);
+        double ease_p = 1.0 - pow(1.0 - p, 3);
+        double opacity = ease_p;
+        double s = 0.6 + 0.4 * ease_p;
 
         if (opacity > 0.001) {
             cairo_save(cr);
@@ -2219,10 +2220,11 @@ static gboolean on_splash_draw(GtkWidget *widget, cairo_t *cr, gpointer user_dat
 
     /* 3. Middle card (still image): translate(256,256) rotate(-6) */
     {
-        double t_local = t - 0.15;
-        double p = CLAMP(t_local / 0.6, 0.0, 1.0);
-        double opacity = p;
-        double s = 0.6 + 0.4 * p;
+        double t_local = t - 0.25;
+        double p = CLAMP(t_local / 0.85, 0.0, 1.0);
+        double ease_p = 1.0 - pow(1.0 - p, 3);
+        double opacity = ease_p;
+        double s = 0.6 + 0.4 * ease_p;
 
         if (opacity > 0.001) {
             cairo_save(cr);
@@ -2238,10 +2240,11 @@ static gboolean on_splash_draw(GtkWidget *widget, cairo_t *cr, gpointer user_dat
 
     /* 4. Front card (active / video wallpaper): translate(346,224) rotate(6) */
     {
-        double t_local = t - 0.30;
-        double p = CLAMP(t_local / 0.6, 0.0, 1.0);
-        double opacity = p;
-        double s = 0.6 + 0.4 * p;
+        double t_local = t - 0.50;
+        double p = CLAMP(t_local / 0.85, 0.0, 1.0);
+        double ease_p = 1.0 - pow(1.0 - p, 3);
+        double opacity = ease_p;
+        double s = 0.6 + 0.4 * ease_p;
 
         if (opacity > 0.001) {
             cairo_save(cr);
@@ -2260,15 +2263,15 @@ static gboolean on_splash_draw(GtkWidget *widget, cairo_t *cr, gpointer user_dat
             cairo_pattern_destroy(grad);
 
             /* 5. Play badge */
-            double t_badge = t - 0.90;
+            double t_badge = t - 1.40;
             if (t_badge > 0.0) {
-                double p_badge = CLAMP(t_badge / 0.6, 0.0, 1.0);
-                double op_badge = CLAMP(t_badge / 0.4, 0.0, 1.0);
+                double p_badge = CLAMP(t_badge / 0.70, 0.0, 1.0);
+                double op_badge = CLAMP(t_badge / 0.45, 0.0, 1.0);
                 double s_badge = 1.0;
-                if (p_badge <= 0.7) {
-                    s_badge = 0.3 + (1.2 - 0.3) * (p_badge / 0.7);
+                if (p_badge <= 0.65) {
+                    s_badge = 0.3 + (1.18 - 0.3) * (p_badge / 0.65);
                 } else {
-                    s_badge = 1.2 + (1.0 - 1.2) * ((p_badge - 0.7) / 0.3);
+                    s_badge = 1.18 + (1.0 - 1.18) * ((p_badge - 0.65) / 0.35);
                 }
 
                 cairo_save(cr);
@@ -2276,8 +2279,8 @@ static gboolean on_splash_draw(GtkWidget *widget, cairo_t *cr, gpointer user_dat
 
                 /* Breathing glow circle */
                 double circle_alpha = 0.16;
-                if (t >= 1.6 && t < 4.0) {
-                    double br = fmod(t - 1.6, 1.2) / 1.2;
+                if (t >= 2.10 && t < 3.50) {
+                    double br = fmod(t - 2.10, 0.70) / 0.70;
                     circle_alpha = 0.16 + 0.14 * sin(br * G_PI);
                 }
                 cairo_arc(cr, 0, 0, 34, 0, 2.0 * G_PI);
@@ -2327,7 +2330,7 @@ static gboolean on_splash_tick(GtkWidget *widget, GdkFrameClock *frame_clock, gp
     gtk_widget_queue_draw(widget);
 
     double t = (double)(g_get_monotonic_time() - ctx->splash_start_time) / 1000000.0;
-    if (t >= 2.6) {
+    if (t >= 3.60) {
         dismiss_splash(ctx);
         return G_SOURCE_REMOVE;
     }
@@ -2344,27 +2347,20 @@ static gboolean on_splash_button_press(GtkWidget *widget, GdkEventButton *event,
     return TRUE;
 }
 
-static void on_splash_skip_clicked(GtkButton *button, gpointer user_data)
-{
-    (void)button;
-    GuiCtx *ctx = (GuiCtx *)user_data;
-    dismiss_splash(ctx);
-}
-
 static GtkWidget *create_splash_view(GuiCtx *ctx)
 {
     GtkWidget *event_box = gtk_event_box_new();
     gtk_style_context_add_class(gtk_widget_get_style_context(event_box), "splash-bg");
     g_signal_connect(event_box, "button-press-event", G_CALLBACK(on_splash_button_press), ctx);
 
-    GtkWidget *center_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    GtkWidget *center_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
     gtk_widget_set_halign(center_box, GTK_ALIGN_CENTER);
     gtk_widget_set_valign(center_box, GTK_ALIGN_CENTER);
     gtk_container_add(GTK_CONTAINER(event_box), center_box);
 
     /* Animated Drawing Area */
     ctx->splash_area = gtk_drawing_area_new();
-    gtk_widget_set_size_request(ctx->splash_area, 220, 220);
+    gtk_widget_set_size_request(ctx->splash_area, 240, 240);
     g_signal_connect(ctx->splash_area, "draw", G_CALLBACK(on_splash_draw), ctx);
     gtk_box_pack_start(GTK_BOX(center_box), ctx->splash_area, FALSE, FALSE, 0);
 
@@ -2377,15 +2373,6 @@ static GtkWidget *create_splash_view(GuiCtx *ctx)
     GtkWidget *sub_lbl = gtk_label_new("Live Video & Static Desktop Wallpaper Studio");
     gtk_style_context_add_class(gtk_widget_get_style_context(sub_lbl), "splash-subtitle");
     gtk_box_pack_start(GTK_BOX(center_box), sub_lbl, FALSE, FALSE, 0);
-
-    /* Enter Button / Skip */
-    GtkWidget *btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_set_halign(btn_box, GTK_ALIGN_CENTER);
-    GtkWidget *skip_btn = gtk_button_new_with_label("Get Started →");
-    gtk_style_context_add_class(gtk_widget_get_style_context(skip_btn), "splash-skip-btn");
-    g_signal_connect(skip_btn, "clicked", G_CALLBACK(on_splash_skip_clicked), ctx);
-    gtk_box_pack_start(GTK_BOX(btn_box), skip_btn, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(center_box), btn_box, FALSE, FALSE, 4);
 
     ctx->splash_start_time = g_get_monotonic_time();
     ctx->splash_finished = false;

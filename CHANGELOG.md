@@ -2,11 +2,14 @@
 
 All notable changes to WallScape are documented in this file.
 
-## 1.9
-- 🎬 **Animated Onboarding Splash Screen**: Dynamic 60 FPS vector card-deck animation introducing WallScape on startup with seamless crossfade transition.
-- 💅 **Polished Update Dialog**: Formatted release notes with native bold markup, clean bullet points, and modern card styling.
+## 2.0
+- 🎬 **Smooth Vector Splash Intro**: Elegant, slow-paced vector card deck animation on launch that automatically and seamlessly opens into the software.
+- 💅 **Polished Update Dialog**: Clean native bold formatting, spaced bullet points, and modern card styling.
 - 🚀 **Start on Boot**: One-click autostart option in sidebar and tray menu to resume wallpapers on laptop login.
 - 🔄 **In-Folder Refresh**: Instantly scan and detect new wallpaper files in any directory without restarting.
+
+## 1.9
+- 🎬 Animated Onboarding Splash Screen foundation.
 
 ## 1.8
 - 📜 **Release Notes Integration**: Automatic changelog extraction into in-app update dialog and GitHub releases.
