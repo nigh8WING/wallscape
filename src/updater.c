@@ -88,12 +88,12 @@ static bool extract_json_string(const char *json, const char *key, char *out, si
     while (*pos && *pos != '"' && i < out_sz - 1) {
         if (*pos == '\\' && *(pos + 1)) {
             pos++;
-            if (*pos == 'n') out[i++] = '\n';
-            else if (*pos == 'r') out[i++] = '\r';
-            else if (*pos == 't') out[i++] = '\t';
-            else out[i++] = *pos;
+            if (*pos == 'n') out[i] = '\n';
+            else if (*pos == 'r') out[i] = '\r';
+            else if (*pos == 't') out[i] = '\t';
+            else out[i] = *pos;
         } else {
-            out[i++] = *pos;
+            out[i] = *pos;
         }
         pos++;
         i++;
