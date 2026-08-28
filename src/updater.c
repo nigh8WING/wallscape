@@ -32,6 +32,7 @@ typedef struct {
     UpdateDownloadCompleteCallback complete_cb;
     gpointer user_data;
     bool success;
+    bool installed_directly;
     char deb_path[512];
     char error_msg[256];
 } DownloadResultCtx;
@@ -247,7 +248,7 @@ static gboolean dispatch_download_result_on_main(gpointer data)
 {
     DownloadResultCtx *res = (DownloadResultCtx *)data;
     if (res->complete_cb) {
-        res->complete_cb(res->success, res->deb_path, res->error_msg, res->user_data);
+        res->complete_cb(res->success, res->installed_directly, res->deb_path, res->error_msg, res->user_data);
     }
     free(res);
     return G_SOURCE_REMOVE;
@@ -272,11 +273,24 @@ static void *updater_download_thread(void *arg)
     int ret = system(cmd);
     if (ret == 0 && access(res->deb_path, R_OK) == 0) {
         res->success = true;
-        /* Trigger native installer via xdg-open / gio */
-        char launch_cmd[2048];
-        snprintf(launch_cmd, sizeof(launch_cmd), "xdg-open \"%s\" || gio open \"%s\" &", res->deb_path, res->deb_path);
-        int launch_res = system(launch_cmd);
-        (void)launch_res;
+
+        /* Try direct background installation via PolicyKit (pkexec) */
+        char install_cmd[2048];
+        snprintf(install_cmd, sizeof(install_cmd),
+                 "pkexec apt-get install -y --reinstall \"%s\" || pkexec dpkg -i \"%s\"",
+                 res->deb_path, res->deb_path);
+        int inst_res = system(install_cmd);
+
+        if (inst_res == 0) {
+            res->installed_directly = true;
+        } else {
+            /* Fallback to GUI package manager if pkexec was cancelled or failed */
+            char launch_cmd[2048];
+            snprintf(launch_cmd, sizeof(launch_cmd), "xdg-open \"%s\" || gio open \"%s\" &", res->deb_path, res->deb_path);
+            int launch_res = system(launch_cmd);
+            (void)launch_res;
+            res->installed_directly = false;
+        }
     } else {
         res->success = false;
         snprintf(res->error_msg, sizeof(res->error_msg), "Failed to download update package.");
@@ -294,7 +308,7 @@ void updater_download_and_install_async(const char *deb_url,
 {
     if (!deb_url || strlen(deb_url) == 0) {
         if (complete_cb) {
-            complete_cb(false, NULL, "No download URL available for update package.", user_data);
+            complete_cb(false, false, NULL, "No download URL available for update package.", user_data);
         }
         return;
     }

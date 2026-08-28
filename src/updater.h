@@ -10,7 +10,7 @@
 #include <stdbool.h>
 #include <gtk/gtk.h>
 
-#define WALLSCAPE_CURRENT_VERSION "1.3.2"
+#define WALLSCAPE_CURRENT_VERSION "1.4.0"
 #define WALLSCAPE_GITHUB_REPO     "nigh8WING/wallscape"
 
 typedef struct {
@@ -25,7 +25,7 @@ typedef struct {
 
 typedef void (*UpdateCheckCallback)(const UpdateInfo *info, gpointer user_data);
 typedef void (*UpdateDownloadProgressCallback)(double fraction, const char *status, gpointer user_data);
-typedef void (*UpdateDownloadCompleteCallback)(bool success, const char *deb_path, const char *error_msg, gpointer user_data);
+typedef void (*UpdateDownloadCompleteCallback)(bool success, bool installed_directly, const char *deb_path, const char *error_msg, gpointer user_data);
 
 /* Asynchronously checks GitHub Releases for a newer version in a background thread.
  * The callback is guaranteed to be invoked on the main GTK thread. */
