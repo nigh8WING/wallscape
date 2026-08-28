@@ -69,7 +69,9 @@ static void sleep_seconds(double seconds)
 static int interrupt_callback(void *opaque)
 {
     AppState *state = (AppState *)opaque;
-    return atomic_load(&state->quit) ? 1 : 0;
+    /* Abort blocking FFmpeg I/O when either the decoder for this video is
+     * stopping (decoder_quit) OR the whole application is shutting down. */
+    return (atomic_load(&state->decoder_quit) || atomic_load(&state->quit)) ? 1 : 0;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -162,12 +164,12 @@ static int decoder_ctx_open(DecoderCtx *d, AppState *state, const char *filepath
     if (!d->frame_raw || !d->frame_yuv) return -1;
 
     /* Allocate pixel buffer for the YUV420P destination frame */
-    int buf_size = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, w, h, 1);
+    int buf_size = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, w, h, 32);
     d->yuv_buffer = (uint8_t *)av_malloc((size_t)buf_size);
     if (!d->yuv_buffer) return -1;
 
     av_image_fill_arrays(d->frame_yuv->data, d->frame_yuv->linesize,
-                         d->yuv_buffer, AV_PIX_FMT_YUV420P, w, h, 1);
+                         d->yuv_buffer, AV_PIX_FMT_YUV420P, w, h, 32);
 
     /* Compute timing info */
     d->time_base = av_q2d(vstream->time_base);
@@ -257,7 +259,11 @@ static void *decoder_thread_func(void *arg)
     double frame_timer = 0.0;
     int64_t start_time = av_gettime_relative();
 
-    while (!atomic_load(&state->quit)) {
+    /* Check both decoder_quit (video switch / stop) and quit (app shutdown). */
+#define DECODER_SHOULD_QUIT() \
+    (atomic_load(&state->decoder_quit) || atomic_load(&state->quit))
+
+    while (!DECODER_SHOULD_QUIT()) {
 
         /* ── Handle pause ──
          * When paused, the decoder sleeps on a condition variable.
@@ -265,7 +271,7 @@ static void *decoder_thread_func(void *arg)
          * the condvar to wake us up. */
         if (atomic_load(&state->paused)) {
             pthread_mutex_lock(&state->pause_mutex);
-            while (atomic_load(&state->paused) && !atomic_load(&state->quit)) {
+            while (atomic_load(&state->paused) && !DECODER_SHOULD_QUIT()) {
                 pthread_cond_wait(&state->pause_cond, &state->pause_mutex);
             }
             pthread_mutex_unlock(&state->pause_mutex);
@@ -274,7 +280,7 @@ static void *decoder_thread_func(void *arg)
             start_time = av_gettime_relative();
             frame_timer = 0.0;
 
-            if (atomic_load(&state->quit)) break;
+            if (DECODER_SHOULD_QUIT()) break;
         }
 
         /* ── Read a packet from the container ── */
@@ -300,7 +306,7 @@ static void *decoder_thread_func(void *arg)
                 /* Step 1: Flush decoder — send NULL packet to drain buffered frames */
                 avcodec_send_packet(d.codec_ctx, NULL);
                 while (avcodec_receive_frame(d.codec_ctx, d.frame_raw) == 0) {
-                    if (atomic_load(&state->quit)) {
+                    if (DECODER_SHOULD_QUIT()) {
                         av_frame_unref(d.frame_raw);
                         break;
                     }
@@ -322,7 +328,7 @@ static void *decoder_thread_func(void *arg)
                     }
                 }
 
-                if (atomic_load(&state->quit)) break;
+                if (DECODER_SHOULD_QUIT()) break;
 
                 /* Step 2: Seek back to the beginning of the file */
                 av_seek_frame(d.fmt_ctx, d.video_stream_idx, 0,
@@ -353,7 +359,7 @@ static void *decoder_thread_func(void *arg)
          * avcodec_send_packet() returns EAGAIN when the codec's internal buffer
          * is full and must be drained first.  We do NOT unref the packet until
          * we have successfully sent it. */
-        while (!atomic_load(&state->quit)) {
+        while (!DECODER_SHOULD_QUIT()) {
             ret = avcodec_send_packet(d.codec_ctx, pkt);
             if (ret == 0) {
                 /* Packet accepted — release it */
@@ -387,7 +393,7 @@ static void *decoder_thread_func(void *arg)
         }
 
         /* ── Receive decoded frames ── */
-        while (!atomic_load(&state->quit)) {
+        while (!DECODER_SHOULD_QUIT()) {
             ret = avcodec_receive_frame(d.codec_ctx, d.frame_raw);
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
             if (ret < 0) {
@@ -424,8 +430,8 @@ static void *decoder_thread_func(void *arg)
             frame_timer = pts + d.frame_delay;
 
             /* ── Push to frame queue ──
-             * This blocks if the queue is full (3 frames), providing natural
-             * backpressure.  Returns false if frame_queue_abort() was called. */
+             * This blocks if the queue is full, providing natural backpressure.
+             * Returns false if frame_queue_abort() was called. */
             if (!frame_queue_push(&state->queue,
                                   d.frame_yuv->data[0], d.frame_yuv->linesize[0],
                                   d.frame_yuv->data[1], d.frame_yuv->data[2],
@@ -437,6 +443,8 @@ static void *decoder_thread_func(void *arg)
             av_frame_unref(d.frame_raw);
         }
     }
+
+#undef DECODER_SHOULD_QUIT
 
     av_packet_free(&pkt);
     decoder_ctx_close(&d);
@@ -461,7 +469,8 @@ int decoder_start(AppState *state, const char *filepath)
     snprintf(state->video_path, LW_MAX_PATH, "%s", filepath);
 
     /* Reset state for new video */
-    atomic_store(&state->paused, false);
+    atomic_store(&state->decoder_quit,  false);   /* fresh start for this video */
+    atomic_store(&state->paused,        false);
     atomic_store(&state->decoder_ready, false);
     frame_queue_reset(&state->queue);
 
@@ -483,11 +492,11 @@ void decoder_stop(AppState *state)
 
     fprintf(stderr, "[decoder] stopping...\n");
 
-    /* Signal the decoder to quit */
-    atomic_store(&state->quit, true);
+    /* Signal the decoder thread to quit (does NOT affect app-level quit flag) */
+    atomic_store(&state->decoder_quit, true);
     atomic_store(&state->paused, false);
 
-    /* Wake the decoder if it's paused */
+    /* Wake the decoder if it's sleeping on the pause condvar */
     pthread_mutex_lock(&state->pause_mutex);
     pthread_cond_signal(&state->pause_cond);
     pthread_mutex_unlock(&state->pause_mutex);
@@ -498,6 +507,9 @@ void decoder_stop(AppState *state)
     /* Wait for the thread to finish */
     pthread_join(state->decoder_tid, NULL);
     state->decoder_running = false;
+
+    /* Reset decoder_quit so the next start() call can use a fresh thread */
+    atomic_store(&state->decoder_quit, false);
 
     /* Flush remaining frames from the queue */
     frame_queue_flush(&state->queue);

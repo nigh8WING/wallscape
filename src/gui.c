@@ -13,6 +13,12 @@
  *   - Custom polished GTK3 CSS styling and SVG branding
  */
 
+/* GtkStatusIcon and gtk_menu_popup are deprecated in GTK 3.14+ in favour of
+ * libayatana-appindicator, but are still fully functional in GTK3 and are
+ * the zero-dependency option for Zorin OS.  Suppress the deprecation warnings
+ * so the build output stays clean. */
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
 #include "gui.h"
 #include "decoder.h"
 #include "config.h"
@@ -185,6 +191,9 @@ struct GuiCtx {
     GtkWidget    *pause_btn;
     GtkWidget    *stop_btn;
 
+    /* System tray icon */
+    GtkStatusIcon *tray_icon;
+
     /* Live video grid */
     GridView      live_grid;
 
@@ -196,6 +205,7 @@ struct GuiCtx {
     UpdateInfo    last_update_info;
 
     guint         render_timer_id;
+    double        render_fps;       /* current render timer target FPS */
 };
 
 /* Forward declarations */
@@ -217,6 +227,60 @@ static void update_grid_visuals(GridView *grid, int active_idx);
 static void start_live_wallpaper(GuiCtx *ctx, const char *filepath);
 static void stop_live_wallpaper(GuiCtx *ctx);
 static void apply_static_wallpaper(GuiCtx *ctx, const char *filepath);
+static void gui_start_render_timer_at_fps(GuiCtx *ctx, double fps);
+
+/* Tray icon callbacks */
+static void on_tray_activate(GtkStatusIcon *icon, gpointer user_data);
+static void on_tray_popup_menu(GtkStatusIcon *icon, guint button,
+                               guint activate_time, gpointer user_data);
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Async Thumbnail Loader
+ *
+ * Thumbnails are generated lazily via g_idle_add() so grid population never
+ * blocks the GTK main thread.  Each card initially shows a generic icon;
+ * the idle callback replaces it with the real thumbnail when the CPU is idle.
+ * ──────────────────────────────────────────────────────────────────────────── */
+typedef struct {
+    char        filepath[LW_MAX_PATH];
+    int         target_w;
+    int         target_h;
+    GtkWidget  *image_widget; /* the GtkImage inside the card to update */
+    bool        is_video;
+} ThumbLoadCtx;
+
+static gboolean thumb_load_idle(gpointer user_data)
+{
+    ThumbLoadCtx *tctx = (ThumbLoadCtx *)user_data;
+
+    /* Widget might have been destroyed (e.g. user changed folder quickly) */
+    if (!GTK_IS_IMAGE(tctx->image_widget)) {
+        free(tctx);
+        return G_SOURCE_REMOVE;
+    }
+
+    GdkPixbuf *thumb = thumbnail_generate(tctx->filepath,
+                                          tctx->target_w, tctx->target_h);
+    if (thumb) {
+        gtk_image_set_from_pixbuf(GTK_IMAGE(tctx->image_widget), thumb);
+        g_object_unref(thumb);
+    }
+    free(tctx);
+    return G_SOURCE_REMOVE;
+}
+
+/* Schedule an asynchronous thumbnail load for an image widget. */
+static void schedule_thumb_load(GtkWidget *image_widget, const char *filepath,
+                                int target_w, int target_h)
+{
+    ThumbLoadCtx *tctx = (ThumbLoadCtx *)malloc(sizeof(ThumbLoadCtx));
+    if (!tctx) return;
+    snprintf(tctx->filepath, LW_MAX_PATH, "%s", filepath);
+    tctx->target_w     = target_w;
+    tctx->target_h     = target_h;
+    tctx->image_widget = image_widget;
+    g_idle_add(thumb_load_idle, tctx);
+}
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Confirmation Dialogs
@@ -542,11 +606,15 @@ static void populate_live_grid(GuiCtx *ctx, const char *folder, const char *acti
         GtkWidget *overlay = gtk_overlay_new();
         gtk_box_pack_start(GTK_BOX(vbox), overlay, FALSE, FALSE, 0);
 
-        GdkPixbuf *thumb = thumbnail_generate(fpath, THUMB_WIDTH, THUMB_HEIGHT);
-        GtkWidget *img = thumb ? gtk_image_new_from_pixbuf(thumb)
-                               : gtk_image_new_from_icon_name("video-x-generic", GTK_ICON_SIZE_DIALOG);
-        if (thumb) g_object_unref(thumb);
+        /* Start with a placeholder icon immediately (no blocking I/O).
+         * The actual thumbnail will be swapped in by the idle callback. */
+        GtkWidget *img = gtk_image_new_from_icon_name("video-x-generic",
+                                                       GTK_ICON_SIZE_DIALOG);
+        gtk_widget_set_size_request(img, THUMB_WIDTH, THUMB_HEIGHT);
         gtk_container_add(GTK_CONTAINER(overlay), img);
+
+        /* Schedule async thumbnail load */
+        schedule_thumb_load(img, fpath, THUMB_WIDTH, THUMB_HEIGHT);
 
         /* Active Badge */
         GtkWidget *badge = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
@@ -672,11 +740,13 @@ static void populate_static_grid(GuiCtx *ctx, const char *folder, const char *ac
         GtkWidget *overlay = gtk_overlay_new();
         gtk_box_pack_start(GTK_BOX(vbox), overlay, FALSE, FALSE, 0);
 
-        GdkPixbuf *thumb = thumbnail_generate(fpath, THUMB_WIDTH, THUMB_HEIGHT);
-        GtkWidget *img = thumb ? gtk_image_new_from_pixbuf(thumb)
-                               : gtk_image_new_from_icon_name("image-x-generic", GTK_ICON_SIZE_DIALOG);
-        if (thumb) g_object_unref(thumb);
+        /* Placeholder shown immediately; real thumbnail loaded asynchronously */
+        GtkWidget *img = gtk_image_new_from_icon_name("image-x-generic",
+                                                       GTK_ICON_SIZE_DIALOG);
+        gtk_widget_set_size_request(img, THUMB_WIDTH, THUMB_HEIGHT);
         gtk_container_add(GTK_CONTAINER(overlay), img);
+
+        schedule_thumb_load(img, fpath, THUMB_WIDTH, THUMB_HEIGHT);
 
         /* Active Badge */
         GtkWidget *badge = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
@@ -853,7 +923,7 @@ static gboolean on_render_tick(gpointer user_data)
     }
 
     /* UX-4: Once the decoder signals ready, update the status bar with accurate
-     * video metadata.  We do this here (on the GTK thread) to avoid any race. */
+     * video metadata, and switch the render timer to match the video's FPS. */
     if (atomic_load(&ctx->state->decoder_ready)) {
         /* Check if status still shows the loading placeholder */
         const char *cur = gtk_label_get_text(GTK_LABEL(ctx->status_label));
@@ -861,12 +931,22 @@ static gboolean on_render_tick(gpointer user_data)
             int w = atomic_load(&ctx->state->video_width);
             int h = atomic_load(&ctx->state->video_height);
             double fps = ctx->state->video_fps;
+            if (fps <= 0.0) fps = 30.0;
+
             char *base = g_path_get_basename(ctx->state->video_path);
             char buf[512];
-            snprintf(buf, sizeof(buf), "🎬 Live Wallpaper: %s (%dx%d @ %.0ffps)",
-                     base, w, h, fps > 0 ? fps : 30.0);
+            const char *orient = (h > w) ? " (portrait)" : "";
+            snprintf(buf, sizeof(buf), "🎬 Live Wallpaper: %s (%dx%d @ %.0ffps%s)",
+                     base, w, h, fps, orient);
             gui_set_status(ctx, buf);
             g_free(base);
+
+            /* Re-start the render timer at the video's actual FPS so we don't
+             * over-poll (wastes CPU) or under-poll (drops frames). */
+            if (ctx->render_fps != fps) {
+                gui_start_render_timer_at_fps(ctx, fps);
+                return G_SOURCE_REMOVE; /* old timer must stop; new one was added */
+            }
         }
     }
 
@@ -1079,6 +1159,63 @@ static gboolean on_restore_folders_idle(gpointer user_data)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ * System Tray Icon Callbacks
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+static void on_tray_activate(GtkStatusIcon *icon, gpointer user_data)
+{
+    (void)icon;
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!ctx->window) return;
+
+    if (gtk_widget_get_visible(ctx->window)) {
+        gtk_widget_hide(ctx->window);
+    } else {
+        gtk_widget_show_all(ctx->window);
+        gtk_window_present(GTK_WINDOW(ctx->window));
+    }
+}
+
+static void on_tray_popup_menu(GtkStatusIcon *icon, guint button,
+                               guint activate_time, gpointer user_data)
+{
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    GtkWidget *menu = gtk_menu_new();
+
+    /* Show/Hide window */
+    const char *vis_label = gtk_widget_get_visible(ctx->window)
+                            ? "Hide WallScape" : "Show WallScape";
+    GtkWidget *item_show = gtk_menu_item_new_with_label(vis_label);
+    g_signal_connect_swapped(item_show, "activate",
+                             G_CALLBACK(on_tray_activate), ctx);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_show);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+                          gtk_separator_menu_item_new());
+
+    /* Turn Off Wallpaper */
+    GtkWidget *item_stop = gtk_menu_item_new_with_label("Turn Off Wallpaper");
+    g_signal_connect_swapped(item_stop, "activate",
+                             G_CALLBACK(stop_live_wallpaper), ctx);
+    gtk_widget_set_sensitive(item_stop,
+                             atomic_load(&ctx->state->playing));
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_stop);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
+                          gtk_separator_menu_item_new());
+
+    /* Quit */
+    GtkWidget *item_quit = gtk_menu_item_new_with_label("Quit WallScape");
+    g_signal_connect(item_quit, "activate", G_CALLBACK(on_quit_clicked), ctx);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_quit);
+
+    gtk_widget_show_all(menu);
+    gtk_menu_popup(GTK_MENU(menu), NULL, NULL,
+                   gtk_status_icon_position_menu, icon,
+                   button, activate_time);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
  * Public API
  * ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -1121,8 +1258,28 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
         gtk_window_set_icon(GTK_WINDOW(ctx->window), app_icon);
     }
 
+    /* Keep the control panel out of the taskbar — it lives in the tray */
+    gtk_window_set_skip_taskbar_hint(GTK_WINDOW(ctx->window), TRUE);
+    gtk_window_set_skip_pager_hint(GTK_WINDOW(ctx->window), TRUE);
+
     gtk_style_context_add_class(gtk_widget_get_style_context(ctx->window), "studio-window");
     g_signal_connect(ctx->window, "delete-event", G_CALLBACK(on_window_delete_event), ctx);
+
+    /* ── System Tray Icon ──────────────────────────────────────────────────── */
+    ctx->tray_icon = gtk_status_icon_new();
+    gtk_status_icon_set_tooltip_text(ctx->tray_icon,
+                                     "WallScape — Live Wallpaper Manager");
+    if (app_icon) {
+        gtk_status_icon_set_from_pixbuf(ctx->tray_icon, app_icon);
+    } else {
+        gtk_status_icon_set_from_icon_name(ctx->tray_icon,
+                                           "preferences-desktop-wallpaper");
+    }
+    gtk_status_icon_set_visible(ctx->tray_icon, TRUE);
+    g_signal_connect(ctx->tray_icon, "activate",
+                     G_CALLBACK(on_tray_activate), ctx);
+    g_signal_connect(ctx->tray_icon, "popup-menu",
+                     G_CALLBACK(on_tray_popup_menu), ctx);
 
     /* UX-6: Keyboard accelerators ─────────────────────────────────────────── */
     GtkAccelGroup *accel_group = gtk_accel_group_new();
@@ -1400,6 +1557,11 @@ void gui_destroy(GuiCtx *ctx)
 {
     if (!ctx) return;
     gui_stop_render_timer(ctx);
+    if (ctx->tray_icon) {
+        gtk_status_icon_set_visible(ctx->tray_icon, FALSE);
+        g_object_unref(ctx->tray_icon);
+        ctx->tray_icon = NULL;
+    }
     if (ctx->window) {
         gtk_widget_destroy(ctx->window);
         ctx->window = NULL;
@@ -1417,10 +1579,28 @@ void gui_show(GuiCtx *ctx)
 
 void gui_start_render_timer(GuiCtx *ctx)
 {
+    /* Default: start at 60fps (16ms) for pre-ready state */
+    gui_start_render_timer_at_fps(ctx, 60.0);
+}
+
+static void gui_start_render_timer_at_fps(GuiCtx *ctx, double fps)
+{
     if (!ctx) return;
-    if (ctx->render_timer_id == 0) {
-        ctx->render_timer_id = g_timeout_add(16, on_render_tick, ctx);
+
+    /* Clamp: minimum 8ms (125fps cap), maximum 100ms (10fps floor) */
+    if (fps <= 0.0) fps = 30.0;
+    guint interval_ms = (guint)(1000.0 / fps);
+    if (interval_ms < 8)   interval_ms = 8;
+    if (interval_ms > 100) interval_ms = 100;
+
+    /* Stop old timer first */
+    if (ctx->render_timer_id != 0) {
+        g_source_remove(ctx->render_timer_id);
+        ctx->render_timer_id = 0;
     }
+
+    ctx->render_fps       = fps;
+    ctx->render_timer_id  = g_timeout_add(interval_ms, on_render_tick, ctx);
 }
 
 void gui_stop_render_timer(GuiCtx *ctx)
@@ -1430,6 +1610,7 @@ void gui_stop_render_timer(GuiCtx *ctx)
         g_source_remove(ctx->render_timer_id);
         ctx->render_timer_id = 0;
     }
+    ctx->render_fps = 0.0;
 }
 
 void gui_set_status(GuiCtx *ctx, const char *text)

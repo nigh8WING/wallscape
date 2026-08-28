@@ -195,11 +195,12 @@ void frame_queue_reset(FrameQueue *q)
 void app_state_init(AppState *s)
 {
     memset(s, 0, sizeof(*s));
-    atomic_store(&s->quit, false);
-    atomic_store(&s->paused, false);
-    atomic_store(&s->playing, false);
-    atomic_store(&s->decoder_ready, false);
-    atomic_store(&s->video_width, 0);
+    atomic_store(&s->quit,         false);
+    atomic_store(&s->decoder_quit, false);
+    atomic_store(&s->paused,       false);
+    atomic_store(&s->playing,      false);
+    atomic_store(&s->decoder_ready,false);
+    atomic_store(&s->video_width,  0);
     atomic_store(&s->video_height, 0);
 
     frame_queue_init(&s->queue);

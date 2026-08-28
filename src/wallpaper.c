@@ -13,6 +13,7 @@
 #include "wallpaper.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
@@ -257,6 +258,37 @@ bool wallpaper_process_events(WallpaperCtx *ctx)
     return true;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Send an EWMH _NET_WM_STATE ClientMessage to the root window.
+ *
+ * This is the ICCCM/EWMH-correct way to add/remove state atoms on a window
+ * that is already mapped.  XChangeProperty() alone is ignored by compliant
+ * window managers for mapped windows (Mutter/GNOME included).
+ *
+ *   action: 0 = remove, 1 = add, 2 = toggle
+ * ──────────────────────────────────────────────────────────────────────────── */
+static void send_net_wm_state(Display *dpy, Window xwin, int action,
+                               Atom atom1, Atom atom2)
+{
+    Window root = DefaultRootWindow(dpy);
+    XEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.xclient.type         = ClientMessage;
+    ev.xclient.serial       = 0;
+    ev.xclient.send_event   = True;
+    ev.xclient.display      = dpy;
+    ev.xclient.window       = xwin;
+    ev.xclient.message_type = XInternAtom(dpy, "_NET_WM_STATE", False);
+    ev.xclient.format       = 32;
+    ev.xclient.data.l[0]    = action;   /* _NET_WM_STATE_ADD = 1 */
+    ev.xclient.data.l[1]    = (long)atom1;
+    ev.xclient.data.l[2]    = (long)atom2;
+    ev.xclient.data.l[3]    = 1;        /* source indication: normal app */
+    ev.xclient.data.l[4]    = 0;
+    XSendEvent(dpy, root, False,
+               SubstructureNotifyMask | SubstructureRedirectMask, &ev);
+}
+
 void wallpaper_show(WallpaperCtx *ctx)
 {
     if (!ctx || !ctx->window) return;
@@ -265,26 +297,63 @@ void wallpaper_show(WallpaperCtx *ctx)
 
     SDL_SysWMinfo wm_info;
     SDL_VERSION(&wm_info.version);
-    if (SDL_GetWindowWMInfo(ctx->window, &wm_info) &&
-        wm_info.subsystem == SDL_SYSWM_X11) {
-
-        Display *dpy  = wm_info.info.x11.display;
-        Window   xwin = wm_info.info.x11.window;
-
-        /* Remove client leader */
-        Atom wm_client_leader = XInternAtom(dpy, "WM_CLIENT_LEADER", False);
-        XDeleteProperty(dpy, xwin, wm_client_leader);
-
-        /* Lower window to the bottom of the desktop layer */
-        XLowerWindow(dpy, xwin);
-
-        XWindowChanges wc;
-        wc.stack_mode = Below;
-        XConfigureWindow(dpy, xwin, CWStackMode, &wc);
-
-        XFlush(dpy);
-        fprintf(stderr, "[wallpaper] window shown in desktop layer (below taskbar).\n");
+    if (!SDL_GetWindowWMInfo(ctx->window, &wm_info) ||
+        wm_info.subsystem != SDL_SYSWM_X11) {
+        return;
     }
+
+    Display *dpy  = wm_info.info.x11.display;
+    Window   xwin = wm_info.info.x11.window;
+
+    /* 1. Remove WM_CLIENT_LEADER so this surface isn't grouped with the
+     *    GTK control panel in the taskbar/window switcher. */
+    Atom wm_client_leader = XInternAtom(dpy, "WM_CLIENT_LEADER", False);
+    XDeleteProperty(dpy, xwin, wm_client_leader);
+
+    /* 2. Re-apply static EWMH hints (for any WM that re-reads them at map) */
+    {
+        Atom state        = XInternAtom(dpy, "_NET_WM_STATE",              False);
+        Atom skip_taskbar = XInternAtom(dpy, "_NET_WM_STATE_SKIP_TASKBAR", False);
+        Atom skip_pager   = XInternAtom(dpy, "_NET_WM_STATE_SKIP_PAGER",   False);
+        Atom below        = XInternAtom(dpy, "_NET_WM_STATE_BELOW",        False);
+        Atom states[3]    = { skip_taskbar, skip_pager, below };
+        XChangeProperty(dpy, xwin, state, XA_ATOM, 32,
+                        PropModeReplace, (unsigned char *)states, 3);
+    }
+
+    /* 3. Re-apply _NET_WM_DESKTOP = 0xFFFFFFFF (sticky) as a property */
+    {
+        Atom net_wm_desktop = XInternAtom(dpy, "_NET_WM_DESKTOP", False);
+        unsigned long all_desktops = 0xFFFFFFFF;
+        XChangeProperty(dpy, xwin, net_wm_desktop, XA_CARDINAL, 32,
+                        PropModeReplace, (unsigned char *)&all_desktops, 1);
+    }
+
+    /* 4. Send runtime ClientMessages so Mutter applies the states NOW.
+     *    This is required for already-mapped windows — XChangeProperty alone
+     *    is only read at initial map time by ICCCM-compliant WMs. */
+    {
+        Atom skip_taskbar = XInternAtom(dpy, "_NET_WM_STATE_SKIP_TASKBAR", False);
+        Atom skip_pager   = XInternAtom(dpy, "_NET_WM_STATE_SKIP_PAGER",   False);
+        Atom below        = XInternAtom(dpy, "_NET_WM_STATE_BELOW",        False);
+        Atom sticky       = XInternAtom(dpy, "_NET_WM_STATE_STICKY",       False);
+
+        /* Add SKIP_TASKBAR + SKIP_PAGER */
+        send_net_wm_state(dpy, xwin, 1, skip_taskbar, skip_pager);
+        /* Add BELOW */
+        send_net_wm_state(dpy, xwin, 1, below, 0);
+        /* Add STICKY (visible on all virtual desktops) */
+        send_net_wm_state(dpy, xwin, 1, sticky, 0);
+    }
+
+    /* 5. Lower the window to the bottom of the stack */
+    XWindowChanges wc;
+    wc.stack_mode = Below;
+    XConfigureWindow(dpy, xwin, CWStackMode, &wc);
+    XLowerWindow(dpy, xwin);
+
+    XFlush(dpy);
+    fprintf(stderr, "[wallpaper] window shown in desktop layer (sticky, below taskbar).\n");
 }
 
 void wallpaper_hide(WallpaperCtx *ctx)
