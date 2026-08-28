@@ -224,6 +224,7 @@ typedef struct {
 
     GtkWidget *back_btn;
     GtkWidget *folder_label;
+    GtkWidget *refresh_btn;
     GtkWidget *add_folder_btn;
 
     GtkWidget *page_stack;        /* Switches between empty_state, folders, and gallery */
@@ -305,6 +306,7 @@ struct GuiCtx {
 /* Forward declarations */
 static gboolean on_render_tick(gpointer user_data);
 static void on_back_btn_clicked(GtkButton *button, gpointer user_data);
+static void on_refresh_btn_clicked(GtkButton *button, gpointer user_data);
 static void on_add_folder_btn_clicked(GtkButton *button, gpointer user_data);
 static gboolean on_folder_card_button_press(GtkWidget *widget, GdkEventButton *event, gpointer user_data);
 static void on_remove_folder_clicked(GtkWidget *button, gpointer user_data);
@@ -695,6 +697,10 @@ static void show_folders_view(GuiCtx *ctx, GridView *grid)
     if (grid->back_btn) {
         gtk_widget_set_visible(grid->back_btn, FALSE);
     }
+    if (grid->refresh_btn) {
+        gtk_widget_set_tooltip_text(grid->refresh_btn, "Rescan all folders");
+        gtk_widget_set_visible(grid->refresh_btn, grid->folder_count > 0);
+    }
 
     if (grid->folder_count == 0) {
         char hdr[256];
@@ -837,6 +843,10 @@ static void open_folder_view(GuiCtx *ctx, GridView *grid, int folder_idx)
     if (grid->back_btn) {
         gtk_widget_set_visible(grid->back_btn, TRUE);
     }
+    if (grid->refresh_btn) {
+        gtk_widget_set_tooltip_text(grid->refresh_btn, "Scan for new, modified, or deleted files in this folder");
+        gtk_widget_set_visible(grid->refresh_btn, TRUE);
+    }
 
     const char *folder = grid->folders[folder_idx];
 
@@ -904,6 +914,27 @@ static void populate_live_grid(GuiCtx *ctx, const char *folder, const char *acti
 
     if (total == 0) {
         g_list_free_full(filenames, g_free);
+        GtkWidget *empty_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+        gtk_widget_set_margin_top(empty_box, 40);
+        gtk_widget_set_margin_bottom(empty_box, 40);
+        gtk_widget_set_halign(empty_box, GTK_ALIGN_CENTER);
+
+        GtkWidget *empty_lbl = gtk_label_new("📁 No videos found in this folder.\nAdd .mp4, .mkv, or .webm files and click Refresh.");
+        gtk_label_set_justify(GTK_LABEL(empty_lbl), GTK_JUSTIFY_CENTER);
+        gtk_style_context_add_class(gtk_widget_get_style_context(empty_lbl), "empty-state-subtitle");
+        gtk_box_pack_start(GTK_BOX(empty_box), empty_lbl, FALSE, FALSE, 0);
+
+        GtkWidget *ref_btn = gtk_button_new_with_label("Refresh Folder");
+        gtk_button_set_image(GTK_BUTTON(ref_btn), gtk_image_new_from_icon_name("view-refresh-symbolic", GTK_ICON_SIZE_BUTTON));
+        gtk_button_set_always_show_image(GTK_BUTTON(ref_btn), TRUE);
+        gtk_style_context_add_class(gtk_widget_get_style_context(ref_btn), "back-btn");
+        g_object_set_data(G_OBJECT(ref_btn), "grid", &ctx->live_grid);
+        g_signal_connect(ref_btn, "clicked", G_CALLBACK(on_refresh_btn_clicked), ctx);
+        gtk_box_pack_start(GTK_BOX(empty_box), ref_btn, FALSE, FALSE, 0);
+
+        gtk_flow_box_insert(GTK_FLOW_BOX(ctx->live_grid.gallery_flow_box), empty_box, -1);
+        gtk_widget_show_all(ctx->live_grid.gallery_flow_box);
+
         if (ctx->live_grid.page_stack)
             gtk_stack_set_visible_child_name(GTK_STACK(ctx->live_grid.page_stack), "gallery");
         return;
@@ -1031,6 +1062,27 @@ static void populate_static_grid(GuiCtx *ctx, const char *folder, const char *ac
 
     if (total == 0) {
         g_list_free_full(filenames, g_free);
+        GtkWidget *empty_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+        gtk_widget_set_margin_top(empty_box, 40);
+        gtk_widget_set_margin_bottom(empty_box, 40);
+        gtk_widget_set_halign(empty_box, GTK_ALIGN_CENTER);
+
+        GtkWidget *empty_lbl = gtk_label_new("📁 No image wallpapers found in this folder.\nAdd .jpg, .png, or .webp files and click Refresh.");
+        gtk_label_set_justify(GTK_LABEL(empty_lbl), GTK_JUSTIFY_CENTER);
+        gtk_style_context_add_class(gtk_widget_get_style_context(empty_lbl), "empty-state-subtitle");
+        gtk_box_pack_start(GTK_BOX(empty_box), empty_lbl, FALSE, FALSE, 0);
+
+        GtkWidget *ref_btn = gtk_button_new_with_label("Refresh Folder");
+        gtk_button_set_image(GTK_BUTTON(ref_btn), gtk_image_new_from_icon_name("view-refresh-symbolic", GTK_ICON_SIZE_BUTTON));
+        gtk_button_set_always_show_image(GTK_BUTTON(ref_btn), TRUE);
+        gtk_style_context_add_class(gtk_widget_get_style_context(ref_btn), "back-btn");
+        g_object_set_data(G_OBJECT(ref_btn), "grid", &ctx->static_grid);
+        g_signal_connect(ref_btn, "clicked", G_CALLBACK(on_refresh_btn_clicked), ctx);
+        gtk_box_pack_start(GTK_BOX(empty_box), ref_btn, FALSE, FALSE, 0);
+
+        gtk_flow_box_insert(GTK_FLOW_BOX(ctx->static_grid.gallery_flow_box), empty_box, -1);
+        gtk_widget_show_all(ctx->static_grid.gallery_flow_box);
+
         if (ctx->static_grid.page_stack)
             gtk_stack_set_visible_child_name(GTK_STACK(ctx->static_grid.page_stack), "gallery");
         return;
@@ -1120,6 +1172,40 @@ static void on_back_btn_clicked(GtkButton *button, gpointer user_data)
     GridView *grid = (GridView *)g_object_get_data(G_OBJECT(button), "grid");
     if (ctx && grid) {
         show_folders_view(ctx, grid);
+    }
+}
+
+static void on_refresh_btn_clicked(GtkButton *button, gpointer user_data)
+{
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    GridView *grid = (GridView *)g_object_get_data(G_OBJECT(button), "grid");
+    if (!ctx || !grid) return;
+
+    if (grid->current_folder_idx >= 0 && grid->current_folder_idx < grid->folder_count) {
+        const char *folder = grid->folders[grid->current_folder_idx];
+        char *base = g_path_get_basename(folder);
+
+        if (grid->is_video) {
+            const char *active = (atomic_load(&ctx->state->playing) && ctx->state->video_path[0])
+                                 ? ctx->state->video_path : NULL;
+            populate_live_grid(ctx, folder, active);
+            char msg[512];
+            snprintf(msg, sizeof(msg), "🔄 Refreshed \"%s\": %d video%s detected.",
+                     base, ctx->live_grid.count, ctx->live_grid.count == 1 ? "" : "s");
+            gui_set_status(ctx, msg);
+        } else {
+            const char *active = (ctx->active_static_path[0] != '\0')
+                                 ? ctx->active_static_path : NULL;
+            populate_static_grid(ctx, folder, active);
+            char msg[512];
+            snprintf(msg, sizeof(msg), "🔄 Refreshed \"%s\": %d image%s detected.",
+                     base, ctx->static_grid.count, ctx->static_grid.count == 1 ? "" : "s");
+            gui_set_status(ctx, msg);
+        }
+        g_free(base);
+    } else {
+        show_folders_view(ctx, grid);
+        gui_set_status(ctx, "🔄 Refreshed all folder collections.");
     }
 }
 
@@ -2081,6 +2167,16 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
     gtk_label_set_xalign(GTK_LABEL(ctx->live_grid.folder_label), 0.0);
     gtk_box_pack_start(GTK_BOX(live_hdr), ctx->live_grid.folder_label, TRUE, TRUE, 0);
 
+    /* Refresh button */
+    ctx->live_grid.refresh_btn = gtk_button_new_with_label("Refresh");
+    gtk_button_set_image(GTK_BUTTON(ctx->live_grid.refresh_btn), gtk_image_new_from_icon_name("view-refresh-symbolic", GTK_ICON_SIZE_BUTTON));
+    gtk_button_set_always_show_image(GTK_BUTTON(ctx->live_grid.refresh_btn), TRUE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(ctx->live_grid.refresh_btn), "back-btn");
+    gtk_widget_set_tooltip_text(ctx->live_grid.refresh_btn, "Scan for new or updated files in this folder");
+    g_object_set_data(G_OBJECT(ctx->live_grid.refresh_btn), "grid", &ctx->live_grid);
+    g_signal_connect(ctx->live_grid.refresh_btn, "clicked", G_CALLBACK(on_refresh_btn_clicked), ctx);
+    gtk_box_pack_end(GTK_BOX(live_hdr), ctx->live_grid.refresh_btn, FALSE, FALSE, 0);
+
     ctx->live_grid.add_folder_btn = gtk_button_new_with_label("Add Folder...");
     gtk_button_set_image(GTK_BUTTON(ctx->live_grid.add_folder_btn), gtk_image_new_from_icon_name("folder-open-symbolic", GTK_ICON_SIZE_BUTTON));
     gtk_button_set_always_show_image(GTK_BUTTON(ctx->live_grid.add_folder_btn), TRUE);
@@ -2162,6 +2258,16 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
     gtk_label_set_ellipsize(GTK_LABEL(ctx->static_grid.folder_label), PANGO_ELLIPSIZE_MIDDLE);
     gtk_label_set_xalign(GTK_LABEL(ctx->static_grid.folder_label), 0.0);
     gtk_box_pack_start(GTK_BOX(static_hdr), ctx->static_grid.folder_label, TRUE, TRUE, 0);
+
+    /* Refresh button */
+    ctx->static_grid.refresh_btn = gtk_button_new_with_label("Refresh");
+    gtk_button_set_image(GTK_BUTTON(ctx->static_grid.refresh_btn), gtk_image_new_from_icon_name("view-refresh-symbolic", GTK_ICON_SIZE_BUTTON));
+    gtk_button_set_always_show_image(GTK_BUTTON(ctx->static_grid.refresh_btn), TRUE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(ctx->static_grid.refresh_btn), "back-btn");
+    gtk_widget_set_tooltip_text(ctx->static_grid.refresh_btn, "Scan for new or updated files in this folder");
+    g_object_set_data(G_OBJECT(ctx->static_grid.refresh_btn), "grid", &ctx->static_grid);
+    g_signal_connect(ctx->static_grid.refresh_btn, "clicked", G_CALLBACK(on_refresh_btn_clicked), ctx);
+    gtk_box_pack_end(GTK_BOX(static_hdr), ctx->static_grid.refresh_btn, FALSE, FALSE, 0);
 
     ctx->static_grid.add_folder_btn = gtk_button_new_with_label("Add Folder...");
     gtk_button_set_image(GTK_BUTTON(ctx->static_grid.add_folder_btn), gtk_image_new_from_icon_name("folder-open-symbolic", GTK_ICON_SIZE_BUTTON));
