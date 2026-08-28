@@ -1747,8 +1747,57 @@ static void on_tray_popup_menu(GtkStatusIcon *icon, guint button,
                    button, activate_time);
 }
 
+static void ensure_app_icons_installed(void)
+{
+    const char *home = getenv("HOME");
+    if (!home) return;
+
+    char *scalable_dir = g_build_filename(home, ".local", "share", "icons", "hicolor", "scalable", "apps", NULL);
+    char *png48_dir    = g_build_filename(home, ".local", "share", "icons", "hicolor", "48x48", "apps", NULL);
+
+    g_mkdir_with_parents(scalable_dir, 0755);
+    g_mkdir_with_parents(png48_dir, 0755);
+
+    char *dst_svg = g_build_filename(scalable_dir, "live-wallpaper.svg", NULL);
+    char *dst_png = g_build_filename(png48_dir, "live-wallpaper.png", NULL);
+
+    GError *err = NULL;
+    GdkPixbuf *pb = gdk_pixbuf_new_from_file("assets/live-wallpaper.svg", &err);
+    if (pb) {
+        gdk_pixbuf_save(pb, "assets/live-wallpaper.png", "png", NULL, NULL);
+
+        GdkPixbuf *pb48 = gdk_pixbuf_scale_simple(pb, 48, 48, GDK_INTERP_BILINEAR);
+        if (pb48) {
+            gdk_pixbuf_save(pb48, dst_png, "png", NULL, NULL);
+            g_object_unref(pb48);
+        }
+        g_object_unref(pb);
+    }
+    if (err) g_error_free(err);
+
+    if (access("assets/live-wallpaper.svg", R_OK) == 0 && access(dst_svg, R_OK) != 0) {
+        char *cmd = g_strdup_printf("cp assets/live-wallpaper.svg \"%s\"", dst_svg);
+        if (cmd) {
+            int r = system(cmd);
+            (void)r;
+            g_free(cmd);
+        }
+    }
+
+    char *icons_root = g_build_filename(home, ".local", "share", "icons", NULL);
+    gtk_icon_theme_append_search_path(gtk_icon_theme_get_default(), icons_root);
+
+    g_free(scalable_dir);
+    g_free(png48_dir);
+    g_free(dst_svg);
+    g_free(dst_png);
+    g_free(icons_root);
+}
+
 static void setup_tray_indicator(GuiCtx *ctx, GdkPixbuf *app_icon)
 {
+    ensure_app_icons_installed();
+
     /* Dynamic load of libayatana-appindicator / libappindicator for modern GNOME Shell & Zorin OS taskbar */
     const char *libs[] = {
         "libayatana-appindicator3.so.1",
@@ -1770,6 +1819,7 @@ static void setup_tray_indicator(GuiCtx *ctx, GdkPixbuf *app_icon)
         fn_app_indicator_set_status   fn_set_status    = (fn_app_indicator_set_status)dlsym(lib, "app_indicator_set_status");
         fn_app_indicator_set_menu     fn_set_menu      = (fn_app_indicator_set_menu)dlsym(lib, "app_indicator_set_menu");
         fn_app_indicator_set_title    fn_set_title     = (fn_app_indicator_set_title)dlsym(lib, "app_indicator_set_title");
+        fn_app_indicator_set_icon_full fn_set_icon_full = (fn_app_indicator_set_icon_full)dlsym(lib, "app_indicator_set_icon_full");
 
         if ((fn_new_with_path || fn_new) && fn_set_status && fn_set_menu) {
             char asset_path[512] = {0};
@@ -1784,13 +1834,16 @@ static void setup_tray_indicator(GuiCtx *ctx, GdkPixbuf *app_icon)
                                              APP_INDICATOR_CATEGORY_APPLICATION_STATUS,
                                              asset_path);
             } else if (fn_new) {
-                indicator = fn_new("wallscape", "preferences-desktop-wallpaper",
+                indicator = fn_new("wallscape", "live-wallpaper",
                                    APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
             }
 
             if (indicator) {
                 if (fn_set_title) {
                     fn_set_title(indicator, "WallScape");
+                }
+                if (fn_set_icon_full) {
+                    fn_set_icon_full(indicator, "live-wallpaper", "WallScape");
                 }
                 fn_set_status(indicator, APP_INDICATOR_STATUS_ACTIVE);
                 GtkWidget *menu = build_tray_menu(ctx);
