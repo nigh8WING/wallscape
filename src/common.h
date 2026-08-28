@@ -158,6 +158,8 @@ typedef struct {
     atomic_int video_width;     /* atomic: written by decoder, read by GUI    */
     atomic_int video_height;    /* atomic: written by decoder, read by GUI    */
     double video_fps;           /* frames per second (set before ready flag)  */
+    char   hw_accel_name[64];   /* e.g. "VA-API (Intel/AMD)", "CUDA", "CPU"   */
+    bool   hw_accel_active;
 
     /* ── Screen / display info ── */
     int    screen_width;

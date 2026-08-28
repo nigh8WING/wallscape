@@ -29,24 +29,32 @@
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/time.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/pixdesc.h>
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Internal decoder context — lives on the decoder thread.
  * ──────────────────────────────────────────────────────────────────────────── */
 typedef struct {
-    AVFormatContext  *fmt_ctx;
-    AVCodecContext   *codec_ctx;
+    AVFormatContext   *fmt_ctx;
+    AVCodecContext    *codec_ctx;
     struct SwsContext *sws_ctx;
-    int               video_stream_idx;
+    int                video_stream_idx;
+
+    /* Hardware acceleration */
+    AVBufferRef       *hw_device_ctx;
+    enum AVPixelFormat hw_pix_fmt;
+    bool               hw_accel_enabled;
+    AVFrame           *frame_sw;        /* software frame after GPU transfer */
 
     /* Destination frame (YUV420P) */
-    AVFrame          *frame_raw;    /* as-decoded frame                */
-    AVFrame          *frame_yuv;    /* converted to YUV420P            */
-    uint8_t          *yuv_buffer;   /* pixel buffer for frame_yuv      */
+    AVFrame           *frame_raw;       /* as-decoded frame (may be HW surface) */
+    AVFrame           *frame_yuv;       /* converted to YUV420P            */
+    uint8_t           *yuv_buffer;      /* pixel buffer for frame_yuv      */
 
     /* Timing */
-    double            time_base;    /* seconds per PTS tick            */
-    double            frame_delay;  /* 1.0 / fps                       */
+    double             time_base;       /* seconds per PTS tick            */
+    double             frame_delay;     /* 1.0 / fps                       */
 } DecoderCtx;
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -63,15 +71,98 @@ static void sleep_seconds(double seconds)
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * AVIOInterruptCB callback — returns 1 to abort blocking FFmpeg I/O when the
- * application is shutting down.  This prevents pthread_join() from hanging
- * while av_read_frame() blocks on a slow filesystem or network stream.
+ * application is shutting down.
  * ──────────────────────────────────────────────────────────────────────────── */
 static int interrupt_callback(void *opaque)
 {
     AppState *state = (AppState *)opaque;
-    /* Abort blocking FFmpeg I/O when either the decoder for this video is
-     * stopping (decoder_quit) OR the whole application is shutting down. */
     return (atomic_load(&state->decoder_quit) || atomic_load(&state->quit)) ? 1 : 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Hardware Acceleration Callback & Device Probing
+ * ──────────────────────────────────────────────────────────────────────────── */
+static enum AVPixelFormat get_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts)
+{
+    const enum AVPixelFormat *p;
+    DecoderCtx *d = (DecoderCtx *)ctx->opaque;
+    if (!d) return AV_PIX_FMT_NONE;
+
+    for (p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
+        if (*p == d->hw_pix_fmt) {
+            return *p;
+        }
+    }
+
+    fprintf(stderr, "[decoder] Failed to negotiate HW pixel format, falling back to software\n");
+    return AV_PIX_FMT_NONE;
+}
+
+static bool try_init_hw_device(DecoderCtx *d, const AVCodec *codec, enum AVHWDeviceType type, const char *dev_name, AppState *state)
+{
+    enum AVPixelFormat pix_fmt = AV_PIX_FMT_NONE;
+    for (int i = 0;; i++) {
+        const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+        if (!config) break;
+        if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) &&
+            config->device_type == type) {
+            pix_fmt = config->pix_fmt;
+            break;
+        }
+    }
+
+    if (pix_fmt == AV_PIX_FMT_NONE) {
+        return false;
+    }
+
+    AVBufferRef *hw_ctx = NULL;
+    int ret = av_hwdevice_ctx_create(&hw_ctx, type, NULL, NULL, 0);
+    if (ret < 0) {
+        return false;
+    }
+
+    d->hw_device_ctx = hw_ctx;
+    d->hw_pix_fmt = pix_fmt;
+    d->hw_accel_enabled = true;
+    d->codec_ctx->hw_device_ctx = av_buffer_ref(hw_ctx);
+    d->codec_ctx->opaque = d;
+    d->codec_ctx->get_format = get_hw_format;
+
+    const char *type_name = av_hwdevice_get_type_name(type);
+    snprintf(state->hw_accel_name, sizeof(state->hw_accel_name), "%s", type_name ? type_name : dev_name);
+    state->hw_accel_active = true;
+
+    fprintf(stderr, "[decoder] ⚡ Hardware acceleration enabled: %s (pixel format: %s)\n",
+            state->hw_accel_name, av_get_pix_fmt_name(pix_fmt));
+    return true;
+}
+
+static void init_hardware_acceleration(DecoderCtx *d, const AVCodec *codec, AppState *state)
+{
+    d->hw_accel_enabled = false;
+    d->hw_device_ctx = NULL;
+    d->hw_pix_fmt = AV_PIX_FMT_NONE;
+    state->hw_accel_active = false;
+    snprintf(state->hw_accel_name, sizeof(state->hw_accel_name), "Software (CPU)");
+
+    /* Prioritized list of hardware device types for Linux */
+    const enum AVHWDeviceType hw_types[] = {
+        AV_HWDEVICE_TYPE_VAAPI,    /* Intel & AMD Mesa / iHD / radeonsi */
+        AV_HWDEVICE_TYPE_CUDA,     /* NVIDIA proprietary NVDEC */
+        AV_HWDEVICE_TYPE_VDPAU,    /* Legacy NVIDIA / AMD */
+        AV_HWDEVICE_TYPE_VULKAN,   /* Universal cross-vendor Vulkan */
+        AV_HWDEVICE_TYPE_DRM,      /* ARM / Embedded / Rockchip / Pi */
+        AV_HWDEVICE_TYPE_NONE
+    };
+
+    for (int i = 0; hw_types[i] != AV_HWDEVICE_TYPE_NONE; i++) {
+        const char *name = av_hwdevice_get_type_name(hw_types[i]);
+        if (try_init_hw_device(d, codec, hw_types[i], name, state)) {
+            return;
+        }
+    }
+
+    fprintf(stderr, "[decoder] Using multi-threaded CPU software decoding.\n");
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -82,14 +173,11 @@ static int decoder_ctx_open(DecoderCtx *d, AppState *state, const char *filepath
 {
     memset(d, 0, sizeof(*d));
 
-    /* Pre-allocate the format context so we can register the interrupt
-     * callback BEFORE avformat_open_input() performs any blocking I/O. */
     d->fmt_ctx = avformat_alloc_context();
     if (!d->fmt_ctx) return -1;
     d->fmt_ctx->interrupt_callback.callback = interrupt_callback;
     d->fmt_ctx->interrupt_callback.opaque   = state;
 
-    /* Open input file */
     int ret = avformat_open_input(&d->fmt_ctx, filepath, NULL, NULL);
     if (ret < 0) {
         char errbuf[256];
@@ -98,13 +186,11 @@ static int decoder_ctx_open(DecoderCtx *d, AppState *state, const char *filepath
         return -1;
     }
 
-    /* Read stream info */
     if (avformat_find_stream_info(d->fmt_ctx, NULL) < 0) {
         fprintf(stderr, "[decoder] failed to find stream info\n");
         return -1;
     }
 
-    /* Find the first video stream (skip audio entirely). */
     d->video_stream_idx = -1;
     for (unsigned i = 0; i < d->fmt_ctx->nb_streams; i++) {
         if (d->fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -120,7 +206,6 @@ static int decoder_ctx_open(DecoderCtx *d, AppState *state, const char *filepath
     AVStream *vstream = d->fmt_ctx->streams[d->video_stream_idx];
     AVCodecParameters *codecpar = vstream->codecpar;
 
-    /* Find and open the decoder */
     const AVCodec *codec = avcodec_find_decoder(codecpar->codec_id);
     if (!codec) {
         fprintf(stderr, "[decoder] unsupported codec: %d\n", codecpar->codec_id);
@@ -132,8 +217,11 @@ static int decoder_ctx_open(DecoderCtx *d, AppState *state, const char *filepath
 
     if (avcodec_parameters_to_context(d->codec_ctx, codecpar) < 0) return -1;
 
-    /* Enable multi-threaded decoding for performance */
-    d->codec_ctx->thread_count = 0;  /* auto-detect thread count */
+    /* Multi-threaded CPU decoding config (used if HW accel unavailable/fails) */
+    d->codec_ctx->thread_count = 0;
+
+    /* Initialize universal GPU hardware acceleration */
+    init_hardware_acceleration(d, codec, state);
 
     if (avcodec_open2(d->codec_ctx, codec, NULL) < 0) {
         fprintf(stderr, "[decoder] failed to open codec\n");
@@ -143,25 +231,19 @@ static int decoder_ctx_open(DecoderCtx *d, AppState *state, const char *filepath
     int w = d->codec_ctx->width;
     int h = d->codec_ctx->height;
 
-    /* Initialize the software scaler: source format → YUV420P
-     *
-     * Even if the source is already YUV420P, sws_scale handles the copy
-     * and any necessary stride alignment.  SWS_FAST_BILINEAR is used as
-     * we are doing a same-size format conversion (no resize), so quality
-     * is equivalent to SWS_BILINEAR but with better throughput. */
-    d->sws_ctx = sws_getContext(
-        w, h, d->codec_ctx->pix_fmt,   /* source */
-        w, h, AV_PIX_FMT_YUV420P,      /* destination */
-        SWS_FAST_BILINEAR, NULL, NULL, NULL);
-    if (!d->sws_ctx) {
-        fprintf(stderr, "[decoder] failed to create swscale context\n");
-        return -1;
+    /* If not using hardware acceleration, initialize swscale directly */
+    if (!d->hw_accel_enabled) {
+        d->sws_ctx = sws_getContext(
+            w, h, d->codec_ctx->pix_fmt,
+            w, h, AV_PIX_FMT_YUV420P,
+            SWS_FAST_BILINEAR, NULL, NULL, NULL);
     }
 
     /* Allocate frames */
     d->frame_raw = av_frame_alloc();
+    d->frame_sw  = av_frame_alloc();
     d->frame_yuv = av_frame_alloc();
-    if (!d->frame_raw || !d->frame_yuv) return -1;
+    if (!d->frame_raw || !d->frame_sw || !d->frame_yuv) return -1;
 
     /* Allocate pixel buffer for the YUV420P destination frame */
     int buf_size = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, w, h, 32);
@@ -171,32 +253,25 @@ static int decoder_ctx_open(DecoderCtx *d, AppState *state, const char *filepath
     av_image_fill_arrays(d->frame_yuv->data, d->frame_yuv->linesize,
                          d->yuv_buffer, AV_PIX_FMT_YUV420P, w, h, 32);
 
-    /* Compute timing info */
     d->time_base = av_q2d(vstream->time_base);
 
-    /* Compute FPS from the stream's average framerate */
     AVRational fps_r = vstream->avg_frame_rate;
     if (fps_r.num > 0 && fps_r.den > 0) {
         state->video_fps = av_q2d(fps_r);
     } else {
-        /* Fallback: use r_frame_rate or assume 30 fps */
         fps_r = vstream->r_frame_rate;
         state->video_fps = (fps_r.num > 0 && fps_r.den > 0)
                            ? av_q2d(fps_r) : 30.0;
     }
     d->frame_delay = 1.0 / state->video_fps;
 
-    /* Store video dimensions in app state (atomic to prevent race with GUI thread) */
     atomic_store(&state->video_width,  w);
     atomic_store(&state->video_height, h);
 
-    fprintf(stderr, "[decoder] opened '%s': %dx%d @ %.2f fps, codec=%s\n",
-            filepath, w, h, state->video_fps, codec->name);
+    fprintf(stderr, "[decoder] opened '%s': %dx%d @ %.2f fps, codec=%s, accel=%s\n",
+            filepath, w, h, state->video_fps, codec->name, state->hw_accel_name);
 
-    /* Signal the main thread that metadata is ready.
-     * Set this LAST, after video_width/height/fps are all populated. */
     atomic_store(&state->decoder_ready, true);
-
     return 0;
 }
 
@@ -205,36 +280,92 @@ static int decoder_ctx_open(DecoderCtx *d, AppState *state, const char *filepath
  * ──────────────────────────────────────────────────────────────────────────── */
 static void decoder_ctx_close(DecoderCtx *d)
 {
-    if (d->sws_ctx)   { sws_freeContext(d->sws_ctx);    d->sws_ctx = NULL; }
-    if (d->frame_raw) { av_frame_free(&d->frame_raw); }
-    if (d->frame_yuv) { av_frame_free(&d->frame_yuv); }
-    if (d->yuv_buffer){ av_free(d->yuv_buffer);         d->yuv_buffer = NULL; }
-    if (d->codec_ctx) { avcodec_free_context(&d->codec_ctx); }
-    if (d->fmt_ctx)   { avformat_close_input(&d->fmt_ctx); }
+    if (d->sws_ctx)       { sws_freeContext(d->sws_ctx);    d->sws_ctx = NULL; }
+    if (d->frame_raw)     { av_frame_free(&d->frame_raw); }
+    if (d->frame_sw)      { av_frame_free(&d->frame_sw); }
+    if (d->frame_yuv)     { av_frame_free(&d->frame_yuv); }
+    if (d->yuv_buffer)    { av_free(d->yuv_buffer);         d->yuv_buffer = NULL; }
+    if (d->hw_device_ctx) { av_buffer_unref(&d->hw_device_ctx); }
+    if (d->codec_ctx)     { avcodec_free_context(&d->codec_ctx); }
+    if (d->fmt_ctx)       { avformat_close_input(&d->fmt_ctx); }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Frame processing & queue pushing (handles both HW surfaces and SW frames)
+ * ──────────────────────────────────────────────────────────────────────────── */
+static bool process_and_push_frame(DecoderCtx *d, AppState *state, AVFrame *src_frame, double *frame_timer, int64_t start_time)
+{
+    AVFrame *frame_to_scale = src_frame;
+
+    /* Transfer hardware frame to system memory if needed */
+    if (src_frame->format == d->hw_pix_fmt && d->hw_accel_enabled) {
+        if (!d->frame_sw) {
+            d->frame_sw = av_frame_alloc();
+            if (!d->frame_sw) return false;
+        }
+        int ret = av_hwframe_transfer_data(d->frame_sw, src_frame, 0);
+        if (ret < 0) {
+            fprintf(stderr, "[decoder] av_hwframe_transfer_data failed: %d\n", ret);
+            return true;
+        }
+        d->frame_sw->pts = src_frame->pts;
+        frame_to_scale = d->frame_sw;
+    }
+
+    int w = frame_to_scale->width > 0 ? frame_to_scale->width : d->codec_ctx->width;
+    int h = frame_to_scale->height > 0 ? frame_to_scale->height : d->codec_ctx->height;
+
+    /* Allocate or update swscale context if pixel format or dimensions require it */
+    if (!d->sws_ctx) {
+        d->sws_ctx = sws_getContext(
+            w, h, frame_to_scale->format,
+            w, h, AV_PIX_FMT_YUV420P,
+            SWS_FAST_BILINEAR, NULL, NULL, NULL);
+    }
+
+    if (d->sws_ctx) {
+        sws_scale(d->sws_ctx,
+                  (const uint8_t *const *)frame_to_scale->data,
+                  frame_to_scale->linesize,
+                  0, h,
+                  d->frame_yuv->data, d->frame_yuv->linesize);
+
+        /* Frame pacing */
+        if (frame_timer) {
+            double pts = 0.0;
+            if (frame_to_scale->pts != AV_NOPTS_VALUE) {
+                pts = (double)frame_to_scale->pts * d->time_base;
+            } else {
+                pts = *frame_timer;
+            }
+
+            double elapsed = (double)(av_gettime_relative() - start_time) / 1e6;
+            double delay = pts - elapsed;
+            if (delay > 0.0 && delay < 1.0) {
+                sleep_seconds(delay);
+            }
+            *frame_timer = pts + d->frame_delay;
+        }
+
+        bool pushed = frame_queue_push(&state->queue,
+                                       d->frame_yuv->data[0], d->frame_yuv->linesize[0],
+                                       d->frame_yuv->data[1], d->frame_yuv->data[2],
+                                       d->frame_yuv->linesize[1],
+                                       w, h);
+        if (d->frame_sw) {
+            av_frame_unref(d->frame_sw);
+        }
+        return pushed;
+    }
+
+    if (d->frame_sw) {
+        av_frame_unref(d->frame_sw);
+    }
+    return true;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Decoder thread function.
- *
- * Main loop:
- *   1. Read a packet (av_read_frame)
- *   2. If it's from the video stream, send to decoder
- *   3. Receive decoded frames
- *   4. Convert to YUV420P via sws_scale
- *   5. Push to frame queue (blocks if full — natural backpressure)
- *   6. Sleep based on frame delay for correct pacing
- *   7. On EOF: seek to timestamp 0 and continue (infinite loop)
- *   8. On pause: sleep on condvar until resumed
- *   9. On quit: exit cleanly
- *
- * The infinite loop logic:
- *   When av_read_frame() returns AVERROR_EOF, we've reached the end of the
- *   video file.  To loop seamlessly:
- *     a) Flush the codec (send a NULL packet to get remaining buffered frames)
- *     b) Seek back to the very beginning: av_seek_frame(fmt_ctx, -1, 0, ...)
- *     c) Flush the codec's internal buffers: avcodec_flush_buffers()
- *     d) Continue the loop — the next av_read_frame() reads from the start
- *   This gives seamless, infinite playback without reopening the file.
  * ──────────────────────────────────────────────────────────────────────────── */
 static void *decoder_thread_func(void *arg)
 {
@@ -259,16 +390,12 @@ static void *decoder_thread_func(void *arg)
     double frame_timer = 0.0;
     int64_t start_time = av_gettime_relative();
 
-    /* Check both decoder_quit (video switch / stop) and quit (app shutdown). */
 #define DECODER_SHOULD_QUIT() \
     (atomic_load(&state->decoder_quit) || atomic_load(&state->quit))
 
     while (!DECODER_SHOULD_QUIT()) {
 
-        /* ── Handle pause ──
-         * When paused, the decoder sleeps on a condition variable.
-         * This uses zero CPU while paused.  decoder_resume() signals
-         * the condvar to wake us up. */
+        /* ── Handle pause ── */
         if (atomic_load(&state->paused)) {
             pthread_mutex_lock(&state->pause_mutex);
             while (atomic_load(&state->paused) && !DECODER_SHOULD_QUIT()) {
@@ -276,7 +403,6 @@ static void *decoder_thread_func(void *arg)
             }
             pthread_mutex_unlock(&state->pause_mutex);
 
-            /* Reset timer after unpause so we don't fast-forward */
             start_time = av_gettime_relative();
             frame_timer = 0.0;
 
@@ -288,21 +414,6 @@ static void *decoder_thread_func(void *arg)
 
         if (ret < 0) {
             if (ret == AVERROR_EOF || avio_feof(d.fmt_ctx->pb)) {
-                /*
-                 * ═══════════════════════════════════════════════════════════
-                 * INFINITE LOOP LOGIC
-                 *
-                 * We've reached the end of the video file.  To loop:
-                 *   1. Flush the decoder to get any remaining buffered frames
-                 *   2. Seek the format context back to timestamp 0
-                 *   3. Flush the codec's internal state
-                 *   4. Continue the decode loop from the beginning
-                 *
-                 * This is more efficient than closing and reopening the file,
-                 * and provides seamless looping with no visible gap.
-                 * ═══════════════════════════════════════════════════════════
-                 */
-
                 /* Step 1: Flush decoder — send NULL packet to drain buffered frames */
                 avcodec_send_packet(d.codec_ctx, NULL);
                 while (avcodec_receive_frame(d.codec_ctx, d.frame_raw) == 0) {
@@ -311,21 +422,9 @@ static void *decoder_thread_func(void *arg)
                         break;
                     }
 
-                    sws_scale(d.sws_ctx,
-                              (const uint8_t *const *)d.frame_raw->data,
-                              d.frame_raw->linesize,
-                              0, d.codec_ctx->height,
-                              d.frame_yuv->data, d.frame_yuv->linesize);
-
-                    bool pushed = frame_queue_push(&state->queue,
-                                          d.frame_yuv->data[0], d.frame_yuv->linesize[0],
-                                          d.frame_yuv->data[1], d.frame_yuv->data[2],
-                                          d.frame_yuv->linesize[1],
-                                          d.codec_ctx->width, d.codec_ctx->height);
+                    bool pushed = process_and_push_frame(&d, state, d.frame_raw, NULL, start_time);
                     av_frame_unref(d.frame_raw);
-                    if (!pushed) {
-                        break;  /* queue aborted */
-                    }
+                    if (!pushed) break;
                 }
 
                 if (DECODER_SHOULD_QUIT()) break;
@@ -340,51 +439,33 @@ static void *decoder_thread_func(void *arg)
                 /* Reset frame timer for the new loop iteration */
                 start_time = av_gettime_relative();
                 frame_timer = 0.0;
-
                 continue;
             }
 
-            /* Some other read error — skip and continue */
             fprintf(stderr, "[decoder] read error: %d, continuing\n", ret);
             continue;
         }
 
-        /* Skip non-video packets (audio, subtitles, etc.) */
+        /* Skip non-video packets */
         if (pkt->stream_index != d.video_stream_idx) {
             av_packet_unref(pkt);
             continue;
         }
 
-        /* ── Send packet to decoder ──
-         * avcodec_send_packet() returns EAGAIN when the codec's internal buffer
-         * is full and must be drained first.  We do NOT unref the packet until
-         * we have successfully sent it. */
+        /* ── Send packet to decoder ── */
         while (!DECODER_SHOULD_QUIT()) {
             ret = avcodec_send_packet(d.codec_ctx, pkt);
             if (ret == 0) {
-                /* Packet accepted — release it */
                 av_packet_unref(pkt);
                 break;
             } else if (ret == AVERROR(EAGAIN)) {
-                /* Decoder full — drain one frame then retry */
                 ret = avcodec_receive_frame(d.codec_ctx, d.frame_raw);
                 if (ret < 0) {
                     av_packet_unref(pkt);
                     break;
                 }
-                /* Process the drained frame inline (same as the receive loop below) */
-                sws_scale(d.sws_ctx,
-                          (const uint8_t *const *)d.frame_raw->data,
-                          d.frame_raw->linesize,
-                          0, d.codec_ctx->height,
-                          d.frame_yuv->data, d.frame_yuv->linesize);
-                frame_queue_push(&state->queue,
-                                 d.frame_yuv->data[0], d.frame_yuv->linesize[0],
-                                 d.frame_yuv->data[1], d.frame_yuv->data[2],
-                                 d.frame_yuv->linesize[1],
-                                 d.codec_ctx->width, d.codec_ctx->height);
+                process_and_push_frame(&d, state, d.frame_raw, &frame_timer, start_time);
                 av_frame_unref(d.frame_raw);
-                /* Loop to retry avcodec_send_packet */
             } else {
                 fprintf(stderr, "[decoder] send_packet error: %d\n", ret);
                 av_packet_unref(pkt);
@@ -401,43 +482,9 @@ static void *decoder_thread_func(void *arg)
                 break;
             }
 
-            /* ── Convert to YUV420P ──
-             * sws_scale handles format conversion and stride alignment.
-             * If the source is already YUV420P, this is essentially a memcpy. */
-            sws_scale(d.sws_ctx,
-                      (const uint8_t *const *)d.frame_raw->data,
-                      d.frame_raw->linesize,
-                      0, d.codec_ctx->height,
-                      d.frame_yuv->data, d.frame_yuv->linesize);
-
-            /* ── Frame pacing ──
-             * Compute how long we should wait before displaying this frame.
-             * Uses the video's PTS (presentation timestamp) to maintain the
-             * original playback speed. */
-            double pts = 0.0;
-            if (d.frame_raw->pts != AV_NOPTS_VALUE) {
-                pts = (double)d.frame_raw->pts * d.time_base;
-            } else {
-                pts = frame_timer;
-            }
-
-            double elapsed = (double)(av_gettime_relative() - start_time) / 1e6;
-            double delay = pts - elapsed;
-            if (delay > 0.0 && delay < 1.0) {
-                sleep_seconds(delay);
-            }
-
-            frame_timer = pts + d.frame_delay;
-
-            /* ── Push to frame queue ──
-             * This blocks if the queue is full, providing natural backpressure.
-             * Returns false if frame_queue_abort() was called. */
-            if (!frame_queue_push(&state->queue,
-                                  d.frame_yuv->data[0], d.frame_yuv->linesize[0],
-                                  d.frame_yuv->data[1], d.frame_yuv->data[2],
-                                  d.frame_yuv->linesize[1],
-                                  d.codec_ctx->width, d.codec_ctx->height)) {
-                break;  /* queue aborted — shutting down */
+            if (!process_and_push_frame(&d, state, d.frame_raw, &frame_timer, start_time)) {
+                av_frame_unref(d.frame_raw);
+                break;
             }
 
             av_frame_unref(d.frame_raw);

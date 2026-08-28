@@ -1328,8 +1328,9 @@ static gboolean on_render_tick(gpointer user_data)
             char *base = g_path_get_basename(ctx->state->video_path);
             char buf[512];
             const char *orient = (h > w) ? " (portrait)" : "";
-            snprintf(buf, sizeof(buf), "🎬 Live Wallpaper: %s (%dx%d @ %.0ffps%s)",
-                     base, w, h, fps, orient);
+            const char *accel = ctx->state->hw_accel_name[0] ? ctx->state->hw_accel_name : "CPU";
+            snprintf(buf, sizeof(buf), "🎬 Live: %s (%dx%d @ %.0ffps%s) [⚡ %s]",
+                     base, w, h, fps, orient, accel);
             gui_set_status(ctx, buf);
             g_free(base);
 
