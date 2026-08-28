@@ -30,11 +30,13 @@
 #include "decoder.h"
 #include "gui.h"
 #include "config.h"
+#include "updater.h"
 
-/* Global state pointer for signal handlers */
-static AppState     *g_state     = NULL;
-static WallpaperCtx *g_wallpaper = NULL;
-static GuiCtx       *g_gui       = NULL;
+/* Global state pointer for signal handlers and app lifecycle */
+static AppState        g_state;
+static WallpaperCtx   *g_wallpaper = NULL;
+static GuiCtx         *g_gui       = NULL;
+static GtkApplication *g_app       = NULL;
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Clean Signal Handling (SIGINT, SIGTERM)
@@ -42,10 +44,10 @@ static GuiCtx       *g_gui       = NULL;
 static void signal_handler(int sig)
 {
     (void)sig;
-    if (g_state) {
-        atomic_store(&g_state->quit, true);
-    }
-    if (gtk_main_level() > 0) {
+    atomic_store(&g_state.quit, true);
+    if (g_app) {
+        g_application_quit(G_APPLICATION(g_app));
+    } else if (gtk_main_level() > 0) {
         gtk_main_quit();
     }
 }
@@ -82,9 +84,136 @@ static void setup_display_environment(void)
     }
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Print usage / help
- * ──────────────────────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Application Lifecycle (GtkApplication - Single Instance)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+static void app_startup(GApplication *app, gpointer user_data)
+{
+    (void)user_data;
+
+    setup_display_environment();
+    setup_signals();
+
+    /* Initialize SDL2 */
+    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
+        fprintf(stderr, "[main] ERROR: Failed to initialize SDL2: %s\n", SDL_GetError());
+        g_application_quit(app);
+        return;
+    }
+
+    app_state_init(&g_state);
+
+    /* Create Wallpaper Window */
+    int screen_w = 0, screen_h = 0;
+    g_wallpaper = wallpaper_create(&screen_w, &screen_h);
+    if (!g_wallpaper) {
+        fprintf(stderr, "[main] ERROR: Failed to create wallpaper window.\n");
+        SDL_Quit();
+        app_state_destroy(&g_state);
+        g_application_quit(app);
+        return;
+    }
+    g_state.screen_width = screen_w;
+    g_state.screen_height = screen_h;
+    wallpaper_hide(g_wallpaper);
+
+    /* Create GTK Control Panel */
+    g_gui = gui_create(&g_state, g_wallpaper);
+    if (!g_gui) {
+        fprintf(stderr, "[main] ERROR: Failed to create GUI.\n");
+        wallpaper_destroy(g_wallpaper);
+        SDL_Quit();
+        app_state_destroy(&g_state);
+        g_application_quit(app);
+        return;
+    }
+
+    /* Keep the background instance alive even when GUI window is closed/hidden */
+    g_application_hold(app);
+}
+
+static int app_command_line(GApplication *app, GApplicationCommandLine *cmdline, gpointer user_data)
+{
+    (void)app;
+    (void)user_data;
+
+    int argc = 0;
+    char **argv = g_application_command_line_get_arguments(cmdline, &argc);
+
+    bool show_gui = true;
+    char initial_video[LW_MAX_PATH] = {0};
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            g_application_command_line_print(cmdline,
+                "WallScape — Live Wallpaper Manager for Zorin OS / GNOME (X11 & Wayland)\n\n"
+                "Usage:\n"
+                "  wallscape [options] [video_file]\n\n"
+                "Options:\n"
+                "  -h, --help       Show this help message\n"
+                "  -v, --version    Show version information\n"
+                "  --no-gui         Start wallpaper in background without showing control panel\n\n"
+                "Supported video formats: .mp4, .mkv, .webm, .avi, .mov\n");
+            g_strfreev(argv);
+            return 0;
+        } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
+            g_application_command_line_print(cmdline, "WallScape version " WALLSCAPE_CURRENT_VERSION " (C11, FFmpeg, SDL2, GTK3)\n");
+            g_strfreev(argv);
+            return 0;
+        } else if (strcmp(argv[i], "--no-gui") == 0) {
+            show_gui = false;
+        } else if (argv[i][0] != '-') {
+            snprintf(initial_video, sizeof(initial_video), "%s", argv[i]);
+        }
+    }
+
+    if (g_gui) {
+        if (initial_video[0] != '\0' && access(initial_video, R_OK) == 0) {
+            fprintf(stderr, "[main] Starting requested video: %s\n", initial_video);
+            gui_load_video_and_scan_folder(g_gui, initial_video);
+        }
+        if (show_gui) {
+            gui_show(g_gui);
+        }
+    }
+
+    g_strfreev(argv);
+    return 0;
+}
+
+static void app_shutdown(GApplication *app, gpointer user_data)
+{
+    (void)app;
+    (void)user_data;
+
+    fprintf(stderr, "[main] Shutting down live wallpaper...\n");
+    atomic_store(&g_state.quit, true);
+
+    if (g_gui) {
+        gui_stop_render_timer(g_gui);
+    }
+    decoder_stop(&g_state);
+
+    if (atomic_load(&g_state.playing) && g_state.video_path[0] != '\0') {
+        config_save(g_state.video_path);
+    }
+
+    if (g_gui) {
+        gui_destroy(g_gui);
+        g_gui = NULL;
+    }
+    if (g_wallpaper) {
+        wallpaper_destroy(g_wallpaper);
+        g_wallpaper = NULL;
+    }
+    app_state_destroy(&g_state);
+
+    SDL_Quit();
+    fprintf(stderr, "[main] Goodbye.\n");
+}
+
 static void print_usage(const char *prog_name)
 {
     printf("WallScape — Live Wallpaper Manager for Zorin OS / GNOME (X11 & Wayland)\n\n");
@@ -97,106 +226,28 @@ static void print_usage(const char *prog_name)
     printf("Supported video formats: .mp4, .mkv, .webm, .avi, .mov\n");
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * Entry Point
- * ═══════════════════════════════════════════════════════════════════════════ */
 int main(int argc, char *argv[])
 {
-    char initial_video[LW_MAX_PATH] = {0};
-    bool show_gui_window = true;
-
-    /* Parse CLI arguments */
+    /* Pre-check help & version before GUI/display initialization */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
-            printf("WallScape version 1.0.0 (C11, FFmpeg, SDL2, GTK3)\n");
+            printf("WallScape version " WALLSCAPE_CURRENT_VERSION " (C11, FFmpeg, SDL2, GTK3)\n");
             return 0;
-        } else if (strcmp(argv[i], "--no-gui") == 0) {
-            show_gui_window = false;
-        } else if (argv[i][0] != '-') {
-            snprintf(initial_video, sizeof(initial_video), "%s", argv[i]);
         }
     }
 
-    /* Configure environment before initializing GUI/SDL */
-    setup_display_environment();
-    setup_signals();
+    GtkApplication *app = gtk_application_new("com.nigh8wing.wallscape",
+                                              G_APPLICATION_HANDLES_COMMAND_LINE);
+    g_app = app;
 
-    /* Initialize GTK3 */
-    if (!gtk_init_check(&argc, &argv)) {
-        fprintf(stderr, "[main] ERROR: Failed to initialize GTK3. Is a display server running?\n");
-        return 1;
-    }
+    g_signal_connect(app, "startup",      G_CALLBACK(app_startup), NULL);
+    g_signal_connect(app, "command-line", G_CALLBACK(app_command_line), NULL);
+    g_signal_connect(app, "shutdown",     G_CALLBACK(app_shutdown), NULL);
 
-    /* Initialize SDL2 */
-    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
-        fprintf(stderr, "[main] ERROR: Failed to initialize SDL2: %s\n", SDL_GetError());
-        return 1;
-    }
-
-    /* Allocate App State */
-    AppState state;
-    app_state_init(&state);
-    g_state = &state;
-
-    /* Create Wallpaper Window */
-    int screen_w = 0, screen_h = 0;
-    WallpaperCtx *wallpaper = wallpaper_create(&screen_w, &screen_h);
-    if (!wallpaper) {
-        fprintf(stderr, "[main] ERROR: Failed to create wallpaper window.\n");
-        SDL_Quit();
-        app_state_destroy(&state);
-        return 1;
-    }
-    state.screen_width = screen_w;
-    state.screen_height = screen_h;
-    g_wallpaper = wallpaper;
-
-    /* Create GTK Control Panel */
-    GuiCtx *gui = gui_create(&state, wallpaper);
-    if (!gui) {
-        fprintf(stderr, "[main] ERROR: Failed to create GUI.\n");
-        wallpaper_destroy(wallpaper);
-        SDL_Quit();
-        app_state_destroy(&state);
-        return 1;
-    }
-    g_gui = gui;
-
-    /* If an explicit video file was passed via CLI, start it */
-    if (initial_video[0] != '\0' && access(initial_video, R_OK) == 0) {
-        fprintf(stderr, "[main] Starting requested video: %s\n", initial_video);
-        gui_load_video_and_scan_folder(gui, initial_video);
-    } else {
-        wallpaper_hide(wallpaper);
-    }
-
-    if (show_gui_window) {
-        gui_show(gui);
-    }
-
-    /* Main GTK Event Loop */
-    gtk_main();
-
-    /* ── Graceful Shutdown ── */
-    fprintf(stderr, "[main] Shutting down live wallpaper...\n");
-    atomic_store(&state.quit, true);
-
-    gui_stop_render_timer(gui);
-    decoder_stop(&state);
-
-    if (state.video_path[0] != '\0') {
-        config_save(state.video_path);
-    }
-
-    gui_destroy(gui);
-    wallpaper_destroy(wallpaper);
-    app_state_destroy(&state);
-
-    SDL_Quit();
-    fprintf(stderr, "[main] Goodbye.\n");
-    return 0;
+    int status = g_application_run(G_APPLICATION(app), argc, argv);
+    g_object_unref(app);
+    return status;
 }
