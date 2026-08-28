@@ -314,5 +314,3 @@ bool autostart_set_enabled(bool enabled)
     fclose(fp);
     return true;
 }
-
-

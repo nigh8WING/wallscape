@@ -5,13 +5,24 @@
 
 - **Primary Target**: Zorin OS 18 & Zorin OS 17 (Ubuntu 24.04 / 22.04 LTS, GNOME 46 / Mutter, x86_64).
 - **Core Functionality**:
+  - **🎬 Smooth Vector Onboarding & Splash Intro**:
+    - Pure Cairo 2D vector animation on launch rendering fanning wallpaper cards, active gradient card, and pulsing play badge at 60 FPS.
+    - Seamlessly and automatically cross-fades directly into the application workspace.
   - **Dual-Mode Left Sidebar**:
     - **🎬 Live Wallpapers Tab**: High-performance video wallpapers (`.mp4`, `.mkv`, `.webm`, `.avi`, `.mov`) playing behind desktop icons with SDL2 hardware acceleration and infinite looping.
     - **🖼️ Static Wallpapers Tab**: High-resolution static image gallery (`.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, `.svg`, `.gif`) natively integrated with GNOME's `GSettings`.
-  - **Multi-Folder Library Management & Navigation**:
-    - **Root Album View**: Folder cards for each imported folder showing folder name, item counter, active badge indicator (`✔ Active`), and a delete (`✕`) button to remove folders from the library without touching disk files.
-    - **Inside-Folder View**: Detailed wallpaper card grid for the selected folder with an `← Folders` back button in the header.
+  - **Multi-Folder Library Management & In-Folder Refresh**:
+    - **Root Album View**: Folder cards for each imported folder showing folder name, item counter, active badge indicator (`✔ Active`), and a delete (`✕`) button.
+    - **Inside-Folder View**: Detailed wallpaper card grid for the selected folder with an `← Folders` back button and a dedicated **Refresh** button to detect newly added/removed files dynamically on the fly.
     - **`+ Add Folder…` Card & Header Button**: Quick folder importation for both video and static image collections.
+  - **⚡ Universal GPU Hardware Acceleration**:
+    - Offloads video decoding directly to GPU across Intel & AMD (VA-API), NVIDIA (CUDA / VDPAU), and Vulkan/DRM devices, dropping CPU usage from ~27% to ~2-5%.
+    - Automatic multi-threaded CPU software fallback if a codec is unsupported.
+  - **📐 Universal Aspect-Preserving Scaling**:
+    - Strict proportional fit for all aspect ratios (16:9, 16:10, 21:9 ultrawide, 4:3 classic, and 1080x1920 portrait).
+    - Ensures videos never exceed full screen display boundaries and are never artificially stretched or distorted.
+  - **🚀 Start on Boot (Autostart)**:
+    - 1-click autostart switch in sidebar footer and tray menu to silently launch WallScape in the background and resume active wallpapers upon user login.
   - **Single-Instance Application Lifecycle (`GtkApplication`)**:
     - Runs as a persistent single instance (`com.nigh8wing.wallscape`) with `g_application_hold()`.
     - **Window Close (`X`)**: Hides the control panel window while wallpaper playback continues uninterrupted in the background.
@@ -20,21 +31,15 @@
   - **Seamless Live ↔ Static Transitions & Real-Time Sync**:
     - Switching from live to static wallpaper stops the decoder thread, hides the SDL2 surface, and applies the static background.
     - Listens to GNOME `org.gnome.desktop.background` (`picture-uri` & `picture-uri-dark`) changes in real time.
-  - **Compact Responsive Thumbnail Grid**: Card grid (`GtkFlowBox`) with non-blocking asynchronous thumbnail extraction (`g_idle_add`) and aspect-ratio preservation (letterboxing/pillarboxing for portrait videos).
-  - **System Tray & Action Center Integration**: Background execution via `GtkStatusIcon` with right-click menu (Show/Hide, Turn Off, Quit) and taskbar suppression (`skip_taskbar_hint`).
+  - **Compact Responsive Thumbnail Grid**: Card grid (`GtkFlowBox`) with non-blocking asynchronous thumbnail extraction (`g_idle_add`) and aspect-ratio preservation.
+  - **System Tray & Taskbar Integration**: Taskbar and indicator menu (Show/Hide, Turn Off, Start on Boot, Quit) and taskbar suppression (`skip_taskbar_hint`).
   - **Dynamic FPS-Matched Render Loop**: Automatically synchronizes GTK timer tick intervals to video stream frame rate (e.g. ~41ms for 24fps, ~16ms for 60fps) to eliminate wasted CPU cycles.
-  - **Multi-Desktop Sticky Rendering**: Runtime EWMH `_NET_WM_STATE_STICKY` + `_NET_WM_DESKTOP = 0xFFFFFFFF` ClientMessage signaling so live wallpapers persist across all virtual workspaces (Super+W / workspace switching).
-  - **Seamless Video Switching**: Independent `decoder_quit` thread lifecycle state to allow instant video switching without affecting overall application runtime.
-  - **Empty-State UI**: Centered placeholder graphic and instructions when no folder has been imported.
-  - **Active State Indicator**: Overlay green checkmark badge (`✔ Active`) with an active green glowing border.
-  - **Interactive Confirmation Dialogs**: Asks for confirmation before turning ON or turning OFF wallpapers.
-  - **Zero Memory Leaks & Zero-CPU Idle Mode**: Strict resource lifecycle management and condition-variable sleeping when idle/paused.
-  - **Polished Card-Stack SVG Branding**: Sleek dark vector logo with layered cards, gradient wallpaper, and play badge in `assets/live-wallpaper.svg`.
-  - **Persistent State**: Automatically remembers and restores multi-folder lists (`live_folders=`, `static_folders=`) and active wallpapers across sessions in `~/.config/live-wallpaper/config`.
-  - **One-Click Native Debian Packaging (.deb)**: Integrated CPack Debian generator (`wallscape-1.1.0-Linux.deb`) for double-click installation via Zorin OS App Center.
-  - **Automatic In-App Updates**: Background updater querying GitHub Releases API with 1-click update download and installation.
-  - **Automated Commit-Triggered CI/CD**: GitHub Actions pipeline that automatically detects version bumps in `CMakeLists.txt`, builds `.deb` packages, creates Git tags, and publishes GitHub Releases on push to `main`.
-- **Cost**: 100% Free & Open Source, utilizing standard Ubuntu repository packages.
+  - **Multi-Desktop Sticky Rendering**: Runtime EWMH `_NET_WM_STATE_STICKY` + `_NET_WM_DESKTOP = 0xFFFFFFFF` ClientMessage signaling so live wallpapers persist across all virtual workspaces.
+  - **One-Click Native Debian Packaging (.deb)**: Integrated CPack Debian generator (`wallscape-2.1-Linux.deb`) for double-click installation via Zorin OS App Center.
+  - **Automatic In-Place Seamless Auto-Updater**: Background updater querying GitHub Releases API with 1-click update download, extraction, and instant restart into user-space (`~/.local/share/wallscape/`).
+  - **Polished Markdown Release Notes**: Real-time markdown parser converting changelog entries into native bold headers, code tags, and spaced bullet points in a 540x390 modal dialog.
+  - **Automated Commit-Triggered CI/CD**: GitHub Actions pipeline that automatically detects version bumps in `CMakeLists.txt`, builds `.deb` packages, creates Git tags, extracts changelog notes, and publishes GitHub Releases on push to `main`.
+- **Cost**: 100% Free & Open Source (MIT License).
 
 ---
 
@@ -66,19 +71,20 @@
 │                 Main Thread (GtkApplication - Wayland)                      │
 │  ┌─────────────────────────┬─────────────────────────────────────────────┐  │
 │  │      Left Sidebar       │       GtkStack Studio Pages                 │  │
-│  │   [Logo] WallScape      │  1. Live Wallpapers Tab:                    │  │
-│  │   [🎬 Live Wallpapers]  │     - Root Folders View (Folder Cards)      │  │
-│  │   [🖼️ Static Wallpapers]│     - Inside-Folder Grid (130x75 Video Cards│  │
-│  │   --------------------  │  2. Static Wallpapers Tab:                  │  │
-│  │   v1.1.0                │     - Root Folders View (Folder Cards)      │  │
-│  │   [Check for Updates]   │     - Inside-Folder Grid (130x75 Image Cards│  │
+│  │   [Logo] WallScape      │  0. Animated Onboarding Splash Screen       │  │
+│  │   [🎬 Live Wallpapers]  │  1. Live Wallpapers Tab:                    │  │
+│  │   [🖼️ Static Wallpapers]│     - Root Folders View (Folder Cards)      │  │
+│  │   --------------------  │     - Inside Grid + [Refresh] Button        │  │
+│  │   [Start on Boot]       │  2. Static Wallpapers Tab:                  │  │
+│  │   v2.1                  │     - Root Folders View (Folder Cards)      │  │
+│  │   [Check for Updates]   │     - Inside Grid + [Refresh] Button        │  │
 │  │                         │  - Navigation: [← Folders] & [+ Add Folder] │  │
 │  │                         │  - Active Badges (✔ Active)                 │  │
 │  │                         │  - Confirmation Modals: Turn ON / OFF       │  │
-│  │                         │  - Update Notification Modal                │  │
+│  │                         │  - Polished Release Notes Update Modal      │  │
 │  └─────────────────────────┴─────────────────────────────────────────────┘  │
 │                                │                                            │
-│         [System Tray / Action Center (GtkStatusIcon)]                       │
+│         [System Tray / AppIndicator (Tray Icon + Menu)]                     │
 │         [Dynamic FPS Timer: 1000/fps ms (16ms @ 60fps, 41ms @ 24fps)]       │
 │         [GNOME GSettings Desktop Sync: picture-uri, picture-uri-dark]       │
 │                                │                                            │
@@ -88,7 +94,7 @@
 │  │  - _NET_WM_STATE_STICKY & _NET_WM_DESKTOP = 0xFFFFFFFF (All Desktops) │  │
 │  │  - Input disabled (XWMHints.input = False)                            │  │
 │  │  - Texture: Streaming SDL_PIXELFORMAT_IYUV (YUV420P)                  │  │
-│  │  - Scaling: Aspect-ratio cover-crop (no distortion)                   │  │
+│  │  - Scaling: Aspect-ratio preservation (Never exceeds screen bounds)   │  │
 │  │  - Managed in META_LAYER_DESKTOP (below taskbar and normal windows)   │  │
 │  └─────────────────────────────▲─────────────────────────────────────────┘  │
 └────────────────────────────────┼────────────────────────────────────────────┘
@@ -96,6 +102,7 @@
 ┌────────────────────────────────┴────────────────────────────────────────────┐
 │                    Decoder Background Thread (decoder.c)                     │
 │  avformat_open_input() → avcodec_send_packet() → avcodec_receive_frame()    │
+│  [Hardware Acceleration: VA-API, CUDA, VDPAU, Vulkan + CPU Fallback]       │
 │  → sws_scale() [YUV420P, 32-byte stride] → Thread-Safe FrameQueue (8 slots) │
 │  - Seamless end-of-file seeking (infinite loop)                             │
 │  - Independent atomic `decoder_quit` flag for seamless video switching      │
@@ -105,7 +112,8 @@
 ┌────────────────────────────────┴────────────────────────────────────────────┐
 │                    Updater Background Thread (updater.c)                     │
 │  Checks GitHub API: GET /repos/nigh8WING/wallscape/releases/latest          │
-│  - Parses tag_name, compare semver, downloads .deb & launches installer      │
+│  - In-Place Seamless Auto-Update into ~/.local/share/wallscape/             │
+│  - Extracts changelog and renders styled release notes in-app               │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -116,16 +124,16 @@
 | Module | Source Files | Responsibilities |
 |---|---|---|
 | **Entry & Lifecycle** | `src/main.c` | Single-instance `GtkApplication` (`com.nigh8wing.wallscape`), background hold, command-line parsing (`--no-gui`, `-v`, `-h`), window wake/present |
-| **GUI Control Panel** | `src/gui.c`, `src/gui.h` | Multi-folder navigation, folder album views, thumbnail grids, back buttons, confirmation modals, updater UI, System Tray icon (`GtkStatusIcon`), FPS-adaptive render timer, GSettings sync |
-| **Auto-Updater** | `src/updater.c`, `src/updater.h` | Background GitHub Releases checker, semver compare, async `.deb` download & launch |
-| **Wallpaper Surface** | `src/wallpaper.c`, `src/wallpaper.h` | SDL2 window, X11 EWMH desktop/sticky ClientMessage hints, hardware rendering |
+| **GUI Control Panel** | `src/gui.c`, `src/gui.h` | Cairo onboarding splash intro, multi-folder navigation, folder album views, thumbnail grids, refresh buttons, confirmation modals, updater UI, System Tray icon / AppIndicator, FPS-adaptive render timer, GSettings sync |
+| **Auto-Updater** | `src/updater.c`, `src/updater.h` | Background GitHub Releases checker, semver compare, in-place user-space auto-updater, changelog formatter |
+| **Wallpaper Surface** | `src/wallpaper.c`, `src/wallpaper.h` | SDL2 window, X11 EWMH desktop/sticky ClientMessage hints, aspect-preserving universal scaling, hardware rendering |
 | **Static Background** | `src/static_wallpaper.c`, `.h` | GNOME GSettings (`picture-uri`, `picture-uri-dark`) integration, format validation |
-| **Video Decoder** | `src/decoder.c`, `src/decoder.h` | Multi-threaded FFmpeg 6.1 decoding, frame pacing, infinite loop, isolated thread lifecycle (`decoder_quit`) |
+| **Video Decoder** | `src/decoder.c`, `src/decoder.h` | Multi-threaded FFmpeg 6.1 decoding with GPU Hardware Acceleration (VA-API, CUDA, VDPAU, Vulkan/DRM), frame pacing, infinite loop, isolated thread lifecycle |
 | **Thumbnail Engine** | `src/thumbnail.c`, `src/thumbnail.h` | Aspect-ratio preserving video frame seeking/extraction (letterbox/pillarbox) + static image scaling (130x75) |
-| **Configuration** | `src/config.c`, `src/config.h` | Persistent key=value storage (`video_path`, `static_path`, `live_folders`, `static_folders`) |
+| **Configuration** | `src/config.c`, `src/config.h` | Persistent key=value storage (`video_path`, `static_path`, `live_folders`, `static_folders`), Start on Boot autostart desktop file management |
 | **Common Data** | `src/common.c`, `src/common.h` | `VideoFrame`, `FrameQueue` (8-frame ring buffer), `AppState` (atomic synchronization) |
-| **Branding Asset** | `assets/live-wallpaper.svg` | Layered card stack vector SVG application logo |
-| **CI/CD Pipelines** | `.github/workflows/ci.yml`, `release.yml` | Automated build, packaging (.deb), auto-tagging, and GitHub Release creation on push |
+| **Branding Asset** | `assets/live-wallpaper.svg`, `assets/onboarding_animation.svg` | Layered card stack vector SVG application logo and splash animation |
+| **CI/CD Pipelines** | `.github/workflows/ci.yml` | Automated build, packaging (.deb), auto-tagging, changelog extraction, and GitHub Release creation on push |
 
 ---
 
@@ -151,40 +159,23 @@ cpack -G DEB
 ### Mandatory Versioning Rule for New Features & Bug Fixes
 Every update pushed to `main` that introduces **new features** or **bug fixes** must increment the version number in both [`CMakeLists.txt`](file:///home/user/Coding/Live%20Wallpaper%20Software/CMakeLists.txt) (`set(CPACK_PACKAGE_VERSION "X.Y")`) and [`src/updater.h`](file:///home/user/Coding/Live%20Wallpaper%20Software/src/updater.h) (`#define WALLSCAPE_CURRENT_VERSION "X.Y"`).
 
-#### Versioning Standard (`1.1 ➜ 1.9 ➜ 2.0`):
-- **Incremental Decimal Progression**: Versions progress sequentially: `1.1` ➜ `1.2` ➜ `1.3` ➜ `1.4` ➜ `1.5` ➜ `1.6` ➜ `1.7` ➜ `1.8` ➜ `1.9`.
-- **Major Milestone Roll-Over**: Reaching beyond `1.9` rolls over into **`2.0`** (then `2.1` ➜ `2.9` ➜ `3.0`).
+#### Versioning Standard (`1.1 ➜ 1.9 ➜ 2.0 ➜ 2.1`):
+- **Incremental Decimal Progression**: Versions progress sequentially: `1.1` ➜ `1.9` ➜ `2.0` ➜ `2.1` ➜ `2.9` ➜ `3.0`.
 
 ### Automated In-Place User-Space Auto-Update Lifecycle:
-1. Bump version in `CMakeLists.txt` and `src/updater.h`.
-2. Commit and push to `main`:
+1. Update [`CHANGELOG.md`](file:///home/user/Coding/Live%20Wallpaper%20Software/CHANGELOG.md) with what's new.
+2. Bump version in `CMakeLists.txt` and `src/updater.h`.
+3. Commit and push to `main`:
    ```bash
    git commit -am "feat/fix: describe changes and bump version to vX.Y"
    git push origin main
    ```
-3. GitHub Actions (`.github/workflows/ci.yml`):
+4. GitHub Actions (`.github/workflows/ci.yml`):
    - Automatically detects the new version tag `vX.Y`.
-   - Compiles WallScape with `-O2` optimizations.
-   - Builds the Debian package `wallscape-X.Y-Linux.deb` with CPack.
-   - Automatically creates the Git tag `vX.Y`.
-   - Publishes the new GitHub Release with generated release notes and the `.deb` asset attached.
-4. Installed WallScape clients:
-   - Check GitHub API asynchronously.
-   - When user clicks **"Update vX.Y"**, the app downloads the `.deb` into user space (`~/.local/share/wallscape/`).
-   - Unpacks via `dpkg-deb -x` without requiring root permissions, passwords, or the GNOME App Store.
-   - Automatically relaunches the updated binary (`~/.local/bin/live-wallpaper`) in under 1 second.
-
----
-
-## 7. Package Management & Uninstallation
-
-```bash
-# Remove package
-sudo apt remove wallscape
-# or
-sudo dpkg -r wallscape
-
-# Purge configurations
-sudo apt purge wallscape
-```
-
+   - Extracts corresponding section from `CHANGELOG.md` for release body.
+   - Compiles WallScape with `-O2` optimizations and builds `wallscape-X.Y-Linux.deb`.
+   - Automatically creates the Git tag `vX.Y` and publishes the GitHub Release.
+5. Installed WallScape clients:
+   - Receive background update notification with formatted "What's New in this update" notes.
+   - 1-click in-place update into user space (`~/.local/share/wallscape/`).
+   - Automatically relaunches the updated binary in under 1 second.

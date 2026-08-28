@@ -32,15 +32,16 @@ struct WallpaperCtx {
     int video_w;
     int video_h;
 
-    SDL_Rect dst_rect;
+    SDL_Rect dst_rect;  /* Aspect-preserving destination rectangle */
 };
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Cover-crop destination rectangle
+ * Destination rectangle: strictly maintains original aspect ratio and fits
+ * within the display boundaries without distortion or exceeding full screen.
  * ──────────────────────────────────────────────────────────────────────────── */
-static void compute_cover_rect(int video_w, int video_h,
-                                int screen_w, int screen_h,
-                                SDL_Rect *dst)
+static void compute_fit_rect(int video_w, int video_h,
+                             int screen_w, int screen_h,
+                             SDL_Rect *dst)
 {
     if (video_w <= 0 || video_h <= 0) {
         dst->x = 0; dst->y = 0;
@@ -52,11 +53,13 @@ static void compute_cover_rect(int video_w, int video_h,
     double sa = (double)screen_w / (double)screen_h;
 
     if (va > sa) {
-        dst->h = screen_h;
-        dst->w = (int)(screen_h * va);
-    } else {
+        /* Wider than screen (e.g. 21:9 on 16:9): fit width, letterbox top/bottom */
         dst->w = screen_w;
         dst->h = (int)(screen_w / va);
+    } else {
+        /* Narrower or matching screen (e.g. 16:9, 16:10, 4:3, 1080x1920): fit height */
+        dst->h = screen_h;
+        dst->w = (int)(screen_h * va);
     }
     dst->x = (screen_w - dst->w) / 2;
     dst->y = (screen_h - dst->h) / 2;
@@ -211,7 +214,7 @@ void wallpaper_set_video_size(WallpaperCtx *ctx, int video_w, int video_h)
     ctx->video_w = video_w;
     ctx->video_h = video_h;
 
-    compute_cover_rect(video_w, video_h, ctx->screen_w, ctx->screen_h, &ctx->dst_rect);
+    compute_fit_rect(video_w, video_h, ctx->screen_w, ctx->screen_h, &ctx->dst_rect);
 
     if (ctx->texture) {
         SDL_DestroyTexture(ctx->texture);

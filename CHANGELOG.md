@@ -2,11 +2,15 @@
 
 All notable changes to WallScape are documented in this file.
 
-## 2.0
-- 🎬 **Smooth Vector Splash Intro**: Elegant, slow-paced vector card deck animation on launch that automatically and seamlessly opens into the software.
-- 💅 **Polished Update Dialog**: Clean native bold formatting, spaced bullet points, and modern card styling.
+## 2.1
+- 📐 **Aspect-Preserving Universal Fit**: Automatic aspect ratio preservation for both horizontal and vertical videos (e.g. 1080x1920 portrait, 21:9 ultrawide, 16:10, 4:3) — never stretched, distorted, or cropped past screen boundaries.
+- 🎬 **Smooth Vector Splash Intro**: Elegant vector card deck animation on startup that automatically cross-fades into the app without extra button prompts.
+- 🔄 **In-Folder Refresh**: Dedicated Refresh buttons to discover new video and image wallpapers instantly on the fly.
 - 🚀 **Start on Boot**: One-click autostart option in sidebar and tray menu to resume wallpapers on laptop login.
-- 🔄 **In-Folder Refresh**: Instantly scan and detect new wallpaper files in any directory without restarting.
+- 💅 **Polished Update Dialog**: Clean native bold formatting, spaced bullet points, and modern card container styling.
+
+## 2.0
+- 🎬 Smooth Vector Splash Intro & Startup refinement.
 
 ## 1.9
 - 🎬 Animated Onboarding Splash Screen foundation.
