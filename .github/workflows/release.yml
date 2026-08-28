@@ -1,4 +1,10 @@
-name: Release WallScape
+name: Release on Manual Tag
+
+# This workflow is a fallback for manual releases via:
+#   git tag v1.2.0 && git push origin v1.2.0
+#
+# Automatic releases on push to main are handled by ci.yml, which reads the
+# version from CMakeLists.txt and creates both the tag and the GitHub Release.
 
 on:
   push:
@@ -38,7 +44,7 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build WallScape
-        run: cmake --build build --config Release
+        run: cmake --build build --config Release -- -j$(nproc)
 
       - name: Build Debian (.deb) Package
         run: |

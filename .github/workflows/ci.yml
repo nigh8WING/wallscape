@@ -1,4 +1,4 @@
-name: Build & Test CI
+name: Build, Package & Auto-Release
 
 on:
   push:
@@ -6,16 +6,31 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: write   # needed to create tags and GitHub Releases
+
 jobs:
-  build:
-    name: Build & Package Check
+  build-and-release:
+    name: Build, Package & Release
     runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so we can check existing tags
 
-      - name: Install Dependencies
+      # ── Read the canonical version from CMakeLists.txt ──────────────────────
+      - name: Read version from CMakeLists.txt
+        id: version
+        run: |
+          VER=$(grep -m1 'set(CPACK_PACKAGE_VERSION' CMakeLists.txt \
+                | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VER"    >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VER"
+
+      - name: Install Build Dependencies
         run: |
           sudo apt update
           sudo apt install -y \
@@ -37,14 +52,54 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Compile WallScape
-        run: cmake --build build --config Release
+        run: cmake --build build --config Release -- -j$(nproc)
 
-      - name: Package Debian (.deb)
+      - name: Build Debian (.deb) Package
         run: |
           cd build
           cpack -G DEB
+          ls -lh *.deb
 
       - name: Verify Package
         run: |
           dpkg-deb -I build/wallscape-*.deb
           dpkg-deb -c build/wallscape-*.deb
+
+      # ── Only create a release on pushes to main (not PRs) ──────────────────
+      - name: Check if tag already exists
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: tag_check
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if git ls-remote --tags origin | grep -q "refs/tags/$TAG$"; then
+            echo "exists=true"  >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG already exists — skipping release creation."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG does not exist — will create release."
+          fi
+
+      - name: Create & Push Git Tag
+        if: >
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          steps.tag_check.outputs.exists == 'false'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Create GitHub Release & Upload .deb
+        if: >
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          steps.tag_check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "WallScape ${{ steps.version.outputs.tag }}"
+          files: build/*.deb
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
