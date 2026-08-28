@@ -1356,25 +1356,54 @@ static gboolean on_render_tick(gpointer user_data)
 /* ─────────────────────────────────────────────────────────────────────────────
  * Update Management & Dialogs
  * ──────────────────────────────────────────────────────────────────────────── */
-static void on_update_download_complete(bool success, const char *deb_path, const char *error_msg, gpointer user_data)
+static void on_update_download_complete(bool success, bool installed_directly, const char *deb_path, const char *error_msg, gpointer user_data)
 {
     GuiCtx *ctx = (GuiCtx *)user_data;
     if (!ctx || !ctx->window) return;
 
     if (success) {
-        gui_set_status(ctx, "Installer launched! Please complete the installation in the installer window.");
-        GtkWidget *dialog = gtk_message_dialog_new(
-            GTK_WINDOW(ctx->window),
-            GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-            GTK_MESSAGE_INFO,
-            GTK_BUTTONS_OK,
-            "Update Package Downloaded");
-        gtk_message_dialog_format_secondary_text(
-            GTK_MESSAGE_DIALOG(dialog),
-            "The installer has been launched automatically (%s).\nPlease follow the on-screen prompt to finish updating WallScape.",
-            deb_path ? deb_path : "/tmp/wallscape-latest.deb");
-        gtk_dialog_run(GTK_DIALOG(dialog));
-        gtk_widget_destroy(dialog);
+        if (installed_directly) {
+            gui_set_status(ctx, "🎉 Update installed successfully! Restart to apply changes.");
+            GtkWidget *dialog = gtk_message_dialog_new(
+                GTK_WINDOW(ctx->window),
+                GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+                GTK_MESSAGE_INFO,
+                GTK_BUTTONS_NONE,
+                "Update Installed Successfully!");
+            gtk_dialog_add_button(GTK_DIALOG(dialog), "Later", GTK_RESPONSE_CANCEL);
+            gtk_dialog_add_button(GTK_DIALOG(dialog), "Restart Now", GTK_RESPONSE_ACCEPT);
+            gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_ACCEPT);
+
+            gtk_message_dialog_format_secondary_text(
+                GTK_MESSAGE_DIALOG(dialog),
+                "WallScape has been updated in the background to the latest version.\nWould you like to restart WallScape now to apply the changes?");
+            gint res = gtk_dialog_run(GTK_DIALOG(dialog));
+            gtk_widget_destroy(dialog);
+
+            if (res == GTK_RESPONSE_ACCEPT) {
+                g_spawn_command_line_async("live-wallpaper", NULL);
+                GApplication *app = g_application_get_default();
+                if (app) {
+                    g_application_quit(app);
+                } else {
+                    gtk_main_quit();
+                }
+            }
+        } else {
+            gui_set_status(ctx, "Installer launched in App Store.");
+            GtkWidget *dialog = gtk_message_dialog_new(
+                GTK_WINDOW(ctx->window),
+                GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+                GTK_MESSAGE_INFO,
+                GTK_BUTTONS_OK,
+                "Update Package Downloaded");
+            gtk_message_dialog_format_secondary_text(
+                GTK_MESSAGE_DIALOG(dialog),
+                "The installer has been opened in the App Center (%s).\nPlease follow the on-screen prompt to finish updating WallScape.",
+                deb_path ? deb_path : "/tmp/wallscape-latest.deb");
+            gtk_dialog_run(GTK_DIALOG(dialog));
+            gtk_widget_destroy(dialog);
+        }
     } else {
         gui_set_status(ctx, "Update download failed.");
         GtkWidget *dialog = gtk_message_dialog_new(

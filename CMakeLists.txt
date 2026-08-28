@@ -81,7 +81,7 @@ install(FILES assets/live-wallpaper.png
 set(CPACK_PACKAGE_NAME "wallscape")
 set(CPACK_PACKAGE_VENDOR "WallScape")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "WallScape - Live Video & Static Desktop Wallpaper Manager for Zorin OS")
-set(CPACK_PACKAGE_VERSION "1.3.2")
+set(CPACK_PACKAGE_VERSION "1.4.0")
 set(CPACK_GENERATOR "DEB")
 
 # Debian package metadata
@@ -89,6 +89,7 @@ set(CPACK_DEBIAN_PACKAGE_MAINTAINER "WallScape Developer <support@wallscape.loca
 set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/nigh8WING/wallscape")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 
 # Automatically calculate shared library dependencies (FFmpeg, GTK3, SDL2, X11)
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
