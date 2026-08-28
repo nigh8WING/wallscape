@@ -8,7 +8,19 @@
   - **Dual-Mode Left Sidebar**:
     - **🎬 Live Wallpapers Tab**: High-performance video wallpapers (`.mp4`, `.mkv`, `.webm`, `.avi`, `.mov`) playing behind desktop icons with SDL2 hardware acceleration and infinite looping.
     - **🖼️ Static Wallpapers Tab**: High-resolution static image gallery (`.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, `.svg`, `.gif`) natively integrated with GNOME's `GSettings`.
-  - **Compact 130x75 Responsive Thumbnail Grid**: Card grid (`GtkFlowBox`) with non-blocking asynchronous thumbnail extraction (`g_idle_add`) and aspect-ratio preservation (letterboxing/pillarboxing for portrait videos).
+  - **Multi-Folder Library Management & Navigation**:
+    - **Root Album View**: Folder cards for each imported folder showing folder name, item counter, active badge indicator (`✔ Active`), and a delete (`✕`) button to remove folders from the library without touching disk files.
+    - **Inside-Folder View**: Detailed wallpaper card grid for the selected folder with an `← Folders` back button in the header.
+    - **`+ Add Folder…` Card & Header Button**: Quick folder importation for both video and static image collections.
+  - **Single-Instance Application Lifecycle (`GtkApplication`)**:
+    - Runs as a persistent single instance (`com.nigh8wing.wallscape`) with `g_application_hold()`.
+    - **Window Close (`X`)**: Hides the control panel window while wallpaper playback continues uninterrupted in the background.
+    - **Re-Launch Wakeup**: Launching WallScape from the terminal or application menu automatically wakes and unhides the running primary instance with all controls and active badges intact.
+    - **Explicit Quit**: Terminating via the **"Quit"** button or tray popup **"Quit WallScape"** gracefully stops playback, releases resources, and exits the process.
+  - **Seamless Live ↔ Static Transitions & Real-Time Sync**:
+    - Switching from live to static wallpaper stops the decoder thread, hides the SDL2 surface, and applies the static background.
+    - Listens to GNOME `org.gnome.desktop.background` (`picture-uri` & `picture-uri-dark`) changes in real time.
+  - **Compact Responsive Thumbnail Grid**: Card grid (`GtkFlowBox`) with non-blocking asynchronous thumbnail extraction (`g_idle_add`) and aspect-ratio preservation (letterboxing/pillarboxing for portrait videos).
   - **System Tray & Action Center Integration**: Background execution via `GtkStatusIcon` with right-click menu (Show/Hide, Turn Off, Quit) and taskbar suppression (`skip_taskbar_hint`).
   - **Dynamic FPS-Matched Render Loop**: Automatically synchronizes GTK timer tick intervals to video stream frame rate (e.g. ~41ms for 24fps, ~16ms for 60fps) to eliminate wasted CPU cycles.
   - **Multi-Desktop Sticky Rendering**: Runtime EWMH `_NET_WM_STATE_STICKY` + `_NET_WM_DESKTOP = 0xFFFFFFFF` ClientMessage signaling so live wallpapers persist across all virtual workspaces (Super+W / workspace switching).
@@ -18,7 +30,7 @@
   - **Interactive Confirmation Dialogs**: Asks for confirmation before turning ON or turning OFF wallpapers.
   - **Zero Memory Leaks & Zero-CPU Idle Mode**: Strict resource lifecycle management and condition-variable sleeping when idle/paused.
   - **Polished Card-Stack SVG Branding**: Sleek dark vector logo with layered cards, gradient wallpaper, and play badge in `assets/live-wallpaper.svg`.
-  - **Persistent State**: Automatically remembers and restores both live video and static image folders across sessions in `~/.config/live-wallpaper/config.txt`.
+  - **Persistent State**: Automatically remembers and restores multi-folder lists (`live_folders=`, `static_folders=`) and active wallpapers across sessions in `~/.config/live-wallpaper/config`.
   - **One-Click Native Debian Packaging (.deb)**: Integrated CPack Debian generator (`wallscape-1.1.0-Linux.deb`) for double-click installation via Zorin OS App Center.
   - **Automatic In-App Updates**: Background updater querying GitHub Releases API with 1-click update download and installation.
   - **Automated Commit-Triggered CI/CD**: GitHub Actions pipeline that automatically detects version bumps in `CMakeLists.txt`, builds `.deb` packages, creates Git tags, and publishes GitHub Releases on push to `main`.
@@ -51,19 +63,24 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                       Main Thread (GTK3 - Wayland)                          │
+│                 Main Thread (GtkApplication - Wayland)                      │
 │  ┌─────────────────────────┬─────────────────────────────────────────────┐  │
 │  │      Left Sidebar       │       GtkStack Studio Pages                 │  │
-│  │   [Logo] WallScape      │  1. Live Wallpaper Grid (130x75 tiles)      │  │
-│  │   [🎬 Live Wallpapers]  │  2. Static Wallpaper Grid (130x75 tiles)    │  │
-│  │   [🖼️ Static Wallpapers]│  - Async Lazy-Loaded Thumbnails             │  │
-│  │   --------------------  │  - Active Badges (✔ Active)                 │  │
-│  │   v1.1.0                │  - Confirmation Modals: Turn ON / OFF       │  │
-│  │   [Check for Updates]   │  - Update Notification Modal                │  │
+│  │   [Logo] WallScape      │  1. Live Wallpapers Tab:                    │  │
+│  │   [🎬 Live Wallpapers]  │     - Root Folders View (Folder Cards)      │  │
+│  │   [🖼️ Static Wallpapers]│     - Inside-Folder Grid (130x75 Video Cards│  │
+│  │   --------------------  │  2. Static Wallpapers Tab:                  │  │
+│  │   v1.1.0                │     - Root Folders View (Folder Cards)      │  │
+│  │   [Check for Updates]   │     - Inside-Folder Grid (130x75 Image Cards│  │
+│  │                         │  - Navigation: [← Folders] & [+ Add Folder] │  │
+│  │                         │  - Active Badges (✔ Active)                 │  │
+│  │                         │  - Confirmation Modals: Turn ON / OFF       │  │
+│  │                         │  - Update Notification Modal                │  │
 │  └─────────────────────────┴─────────────────────────────────────────────┘  │
 │                                │                                            │
 │         [System Tray / Action Center (GtkStatusIcon)]                       │
 │         [Dynamic FPS Timer: 1000/fps ms (16ms @ 60fps, 41ms @ 24fps)]       │
+│         [GNOME GSettings Desktop Sync: picture-uri, picture-uri-dark]       │
 │                                │                                            │
 │  ┌─────────────────────────────▼─────────────────────────────────────────┐  │
 │  │             SDL2 Wallpaper Surface (wallpaper.c - XWayland)           │  │
@@ -98,14 +115,14 @@
 
 | Module | Source Files | Responsibilities |
 |---|---|---|
-| **Entry & Lifecycle** | `src/main.c` | Display environment setup, signal handling, CLI parsing (`--no-gui`, `-v`, `-h`) |
-| **GUI Control Panel** | `src/gui.c`, `src/gui.h` | Dual-tab sidebar, thumbnail grids, empty states, confirmation modals, updater UI, System Tray icon (`GtkStatusIcon`), FPS-adaptive render timer |
+| **Entry & Lifecycle** | `src/main.c` | Single-instance `GtkApplication` (`com.nigh8wing.wallscape`), background hold, command-line parsing (`--no-gui`, `-v`, `-h`), window wake/present |
+| **GUI Control Panel** | `src/gui.c`, `src/gui.h` | Multi-folder navigation, folder album views, thumbnail grids, back buttons, confirmation modals, updater UI, System Tray icon (`GtkStatusIcon`), FPS-adaptive render timer, GSettings sync |
 | **Auto-Updater** | `src/updater.c`, `src/updater.h` | Background GitHub Releases checker, semver compare, async `.deb` download & launch |
 | **Wallpaper Surface** | `src/wallpaper.c`, `src/wallpaper.h` | SDL2 window, X11 EWMH desktop/sticky ClientMessage hints, hardware rendering |
-| **Static Background** | `src/static_wallpaper.c`, `.h` | GNOME GSettings (`picture-uri`, `picture-uri-dark`) integration |
+| **Static Background** | `src/static_wallpaper.c`, `.h` | GNOME GSettings (`picture-uri`, `picture-uri-dark`) integration, format validation |
 | **Video Decoder** | `src/decoder.c`, `src/decoder.h` | Multi-threaded FFmpeg 6.1 decoding, frame pacing, infinite loop, isolated thread lifecycle (`decoder_quit`) |
 | **Thumbnail Engine** | `src/thumbnail.c`, `src/thumbnail.h` | Aspect-ratio preserving video frame seeking/extraction (letterbox/pillarbox) + static image scaling (130x75) |
-| **Configuration** | `src/config.c`, `src/config.h` | Persistent key=value storage (`video_path`, `live_folder`, `static_folder`) |
+| **Configuration** | `src/config.c`, `src/config.h` | Persistent key=value storage (`video_path`, `static_path`, `live_folders`, `static_folders`) |
 | **Common Data** | `src/common.c`, `src/common.h` | `VideoFrame`, `FrameQueue` (8-frame ring buffer), `AppState` (atomic synchronization) |
 | **Branding Asset** | `assets/live-wallpaper.svg` | Layered card stack vector SVG application logo |
 | **CI/CD Pipelines** | `.github/workflows/ci.yml`, `release.yml` | Automated build, packaging (.deb), auto-tagging, and GitHub Release creation on push |

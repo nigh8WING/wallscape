@@ -164,3 +164,87 @@ bool config_save_static_folder(const char *folder)
 {
     return config_save_key("static_folder=", folder);
 }
+
+static bool config_load_folder_list(const char *key, const char *fallback_key,
+                                    char folders[][LW_MAX_PATH], int max_count, int *out_count)
+{
+    if (!folders || max_count <= 0 || !out_count) return false;
+    *out_count = 0;
+
+    char raw[LW_MAX_PATH * 32 + 128] = {0};
+    if (config_load_key(key, raw, sizeof(raw)) && raw[0] != '\0') {
+        char *saveptr = NULL;
+        char *token = strtok_r(raw, "|;\n\r", &saveptr);
+        while (token && *out_count < max_count) {
+            while (*token == ' ' || *token == '\t') token++;
+            if (*token != '\0') {
+                snprintf(folders[*out_count], LW_MAX_PATH, "%s", token);
+                (*out_count)++;
+            }
+            token = strtok_r(NULL, "|;\n\r", &saveptr);
+        }
+    }
+
+    if (*out_count == 0 && fallback_key) {
+        char single[LW_MAX_PATH] = {0};
+        if (config_load_key(fallback_key, single, sizeof(single)) && single[0] != '\0') {
+            snprintf(folders[0], LW_MAX_PATH, "%s", single);
+            *out_count = 1;
+        }
+    }
+
+    return (*out_count > 0);
+}
+
+static bool config_save_folder_list(const char *key, const char *single_key,
+                                    const char folders[][LW_MAX_PATH], int count)
+{
+    char buf[LW_MAX_PATH * 32 + 128] = {0};
+    size_t off = 0;
+
+    for (int i = 0; i < count && i < MAX_CONFIG_FOLDERS; i++) {
+        if (!folders[i][0]) continue;
+        int n = snprintf(buf + off, sizeof(buf) - off, "%s%s", (off > 0 ? "|" : ""), folders[i]);
+        if (n > 0 && (size_t)n < sizeof(buf) - off) {
+            off += (size_t)n;
+        }
+    }
+
+    config_save_key(key, buf);
+    if (single_key) {
+        config_save_key(single_key, (count > 0 && folders[0][0]) ? folders[0] : "");
+    }
+    return true;
+}
+
+bool config_load_live_folders(char folders[][LW_MAX_PATH], int max_count, int *out_count)
+{
+    return config_load_folder_list("live_folders=", "live_folder=", folders, max_count, out_count);
+}
+
+bool config_save_live_folders(const char folders[][LW_MAX_PATH], int count)
+{
+    return config_save_folder_list("live_folders=", "live_folder=", folders, count);
+}
+
+bool config_load_static_folders(char folders[][LW_MAX_PATH], int max_count, int *out_count)
+{
+    return config_load_folder_list("static_folders=", "static_folder=", folders, max_count, out_count);
+}
+
+bool config_save_static_folders(const char folders[][LW_MAX_PATH], int count)
+{
+    return config_save_folder_list("static_folders=", "static_folder=", folders, count);
+}
+
+bool config_load_static_path(char *path_out, int max_len)
+{
+    return config_load_key("static_path=", path_out, max_len);
+}
+
+bool config_save_static_path(const char *path)
+{
+    return config_save_key("static_path=", path);
+}
+
+
