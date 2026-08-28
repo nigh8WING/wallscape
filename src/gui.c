@@ -13,10 +13,6 @@
  *   - Custom polished GTK3 CSS styling and SVG branding
  */
 
-/* GtkStatusIcon and gtk_menu_popup are deprecated in GTK 3.14+ in favour of
- * libayatana-appindicator, but are still fully functional in GTK3 and are
- * the zero-dependency option for Zorin OS.  Suppress the deprecation warnings
- * so the build output stays clean. */
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
 #include "gui.h"
@@ -31,6 +27,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
+#include <dlfcn.h>
 
 #define MAX_WALLPAPERS 256
 
@@ -244,6 +242,32 @@ typedef struct {
     int        active_idx;
 } GridView;
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * AppIndicator / Ayatana Support (Dynamic D-Bus SNI for GNOME / Zorin OS)
+ * ──────────────────────────────────────────────────────────────────────────── */
+typedef enum {
+    APP_INDICATOR_CATEGORY_APPLICATION_STATUS = 0,
+    APP_INDICATOR_CATEGORY_COMMUNICATIONS,
+    APP_INDICATOR_CATEGORY_SYSTEM_SERVICES,
+    APP_INDICATOR_CATEGORY_HARDWARE,
+    APP_INDICATOR_CATEGORY_OTHER
+} AppIndicatorCategory;
+
+typedef enum {
+    APP_INDICATOR_STATUS_PASSIVE = 0,
+    APP_INDICATOR_STATUS_ACTIVE,
+    APP_INDICATOR_STATUS_ATTENTION
+} AppIndicatorStatus;
+
+typedef struct _AppIndicator AppIndicator;
+
+typedef AppIndicator* (*fn_app_indicator_new_with_path)(const gchar *id, const gchar *icon_name, AppIndicatorCategory category, const gchar *icon_theme_path);
+typedef AppIndicator* (*fn_app_indicator_new)(const gchar *id, const gchar *icon_name, AppIndicatorCategory category);
+typedef void (*fn_app_indicator_set_status)(AppIndicator *self, AppIndicatorStatus status);
+typedef void (*fn_app_indicator_set_menu)(AppIndicator *self, GtkMenu *menu);
+typedef void (*fn_app_indicator_set_title)(AppIndicator *self, const gchar *title);
+typedef void (*fn_app_indicator_set_icon_full)(AppIndicator *self, const gchar *icon_name, const gchar *icon_desc);
+
 struct GuiCtx {
     AppState     *state;
     WallpaperCtx *wallpaper;
@@ -257,8 +281,11 @@ struct GuiCtx {
     GtkWidget    *pause_btn;
     GtkWidget    *stop_btn;
 
-    /* System tray icon */
+    /* System tray / AppIndicator */
     GtkStatusIcon *tray_icon;
+    void          *app_indicator;
+    void          *app_indicator_lib;
+    fn_app_indicator_set_status fn_set_status;
 
     /* Live video grid */
     GridView      live_grid;
@@ -1627,11 +1654,15 @@ static gboolean on_restore_folders_idle(gpointer user_data)
  * System Tray Icon Callbacks
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * System Tray / AppIndicator Callbacks & Setup
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
 static void on_tray_activate(GtkStatusIcon *icon, gpointer user_data)
 {
     (void)icon;
     GuiCtx *ctx = (GuiCtx *)user_data;
-    if (!ctx->window) return;
+    if (!ctx || !ctx->window) return;
 
     if (gtk_widget_get_visible(ctx->window)) {
         gtk_widget_hide(ctx->window);
@@ -1641,43 +1672,151 @@ static void on_tray_activate(GtkStatusIcon *icon, gpointer user_data)
     }
 }
 
+static void on_indicator_show_activate(GtkMenuItem *item, gpointer user_data)
+{
+    (void)item;
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!ctx || !ctx->window) return;
+    gtk_widget_show_all(ctx->window);
+    gtk_window_present(GTK_WINDOW(ctx->window));
+}
+
+static void on_indicator_hide_activate(GtkMenuItem *item, gpointer user_data)
+{
+    (void)item;
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!ctx || !ctx->window) return;
+    gtk_widget_hide(ctx->window);
+}
+
+static void on_indicator_stop_activate(GtkMenuItem *item, gpointer user_data)
+{
+    (void)item;
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!ctx) return;
+    stop_live_wallpaper(ctx);
+}
+
+static void on_indicator_quit_activate(GtkMenuItem *item, gpointer user_data)
+{
+    (void)item;
+    (void)user_data;
+    GApplication *app = g_application_get_default();
+    if (app) {
+        g_application_quit(app);
+    } else {
+        gtk_main_quit();
+    }
+}
+
+static GtkWidget *build_tray_menu(GuiCtx *ctx)
+{
+    GtkWidget *menu = gtk_menu_new();
+
+    GtkWidget *item_show = gtk_menu_item_new_with_label("Show WallScape");
+    g_signal_connect(item_show, "activate", G_CALLBACK(on_indicator_show_activate), ctx);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_show);
+
+    GtkWidget *item_hide = gtk_menu_item_new_with_label("Hide WallScape");
+    g_signal_connect(item_hide, "activate", G_CALLBACK(on_indicator_hide_activate), ctx);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_hide);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
+    GtkWidget *item_stop = gtk_menu_item_new_with_label("Turn Off Live Wallpaper");
+    g_signal_connect(item_stop, "activate", G_CALLBACK(on_indicator_stop_activate), ctx);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_stop);
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
+    GtkWidget *item_quit = gtk_menu_item_new_with_label("Quit WallScape");
+    g_signal_connect(item_quit, "activate", G_CALLBACK(on_indicator_quit_activate), ctx);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_quit);
+
+    gtk_widget_show_all(menu);
+    return menu;
+}
+
 static void on_tray_popup_menu(GtkStatusIcon *icon, guint button,
                                guint activate_time, gpointer user_data)
 {
     GuiCtx *ctx = (GuiCtx *)user_data;
-    GtkWidget *menu = gtk_menu_new();
-
-    /* Show/Hide window */
-    const char *vis_label = gtk_widget_get_visible(ctx->window)
-                            ? "Hide WallScape" : "Show WallScape";
-    GtkWidget *item_show = gtk_menu_item_new_with_label(vis_label);
-    g_signal_connect_swapped(item_show, "activate",
-                             G_CALLBACK(on_tray_activate), ctx);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_show);
-
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                          gtk_separator_menu_item_new());
-
-    /* Turn Off Wallpaper */
-    GtkWidget *item_stop = gtk_menu_item_new_with_label("Turn Off Wallpaper");
-    g_signal_connect_swapped(item_stop, "activate",
-                             G_CALLBACK(stop_live_wallpaper), ctx);
-    gtk_widget_set_sensitive(item_stop,
-                             atomic_load(&ctx->state->playing));
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_stop);
-
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu),
-                          gtk_separator_menu_item_new());
-
-    /* Quit */
-    GtkWidget *item_quit = gtk_menu_item_new_with_label("Quit WallScape");
-    g_signal_connect(item_quit, "activate", G_CALLBACK(on_quit_clicked), ctx);
-    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_quit);
-
-    gtk_widget_show_all(menu);
+    GtkWidget *menu = build_tray_menu(ctx);
     gtk_menu_popup(GTK_MENU(menu), NULL, NULL,
                    gtk_status_icon_position_menu, icon,
                    button, activate_time);
+}
+
+static void setup_tray_indicator(GuiCtx *ctx, GdkPixbuf *app_icon)
+{
+    /* Dynamic load of libayatana-appindicator / libappindicator for modern GNOME Shell & Zorin OS taskbar */
+    const char *libs[] = {
+        "libayatana-appindicator3.so.1",
+        "libappindicator3.so.1",
+        "libayatana-appindicator3.so",
+        "libappindicator3.so",
+        NULL
+    };
+
+    void *lib = NULL;
+    for (int i = 0; libs[i]; i++) {
+        lib = dlopen(libs[i], RTLD_LAZY);
+        if (lib) break;
+    }
+
+    if (lib) {
+        fn_app_indicator_new_with_path fn_new_with_path = (fn_app_indicator_new_with_path)dlsym(lib, "app_indicator_new_with_path");
+        fn_app_indicator_new           fn_new           = (fn_app_indicator_new)dlsym(lib, "app_indicator_new");
+        fn_app_indicator_set_status   fn_set_status    = (fn_app_indicator_set_status)dlsym(lib, "app_indicator_set_status");
+        fn_app_indicator_set_menu     fn_set_menu      = (fn_app_indicator_set_menu)dlsym(lib, "app_indicator_set_menu");
+        fn_app_indicator_set_title    fn_set_title     = (fn_app_indicator_set_title)dlsym(lib, "app_indicator_set_title");
+
+        if ((fn_new_with_path || fn_new) && fn_set_status && fn_set_menu) {
+            char asset_path[512] = {0};
+            char cwd[256];
+            if (getcwd(cwd, sizeof(cwd))) {
+                snprintf(asset_path, sizeof(asset_path), "%s/assets", cwd);
+            }
+
+            AppIndicator *indicator = NULL;
+            if (fn_new_with_path && asset_path[0] && access(asset_path, R_OK) == 0) {
+                indicator = fn_new_with_path("wallscape", "live-wallpaper",
+                                             APP_INDICATOR_CATEGORY_APPLICATION_STATUS,
+                                             asset_path);
+            } else if (fn_new) {
+                indicator = fn_new("wallscape", "preferences-desktop-wallpaper",
+                                   APP_INDICATOR_CATEGORY_APPLICATION_STATUS);
+            }
+
+            if (indicator) {
+                if (fn_set_title) {
+                    fn_set_title(indicator, "WallScape");
+                }
+                fn_set_status(indicator, APP_INDICATOR_STATUS_ACTIVE);
+                GtkWidget *menu = build_tray_menu(ctx);
+                fn_set_menu(indicator, GTK_MENU(menu));
+
+                ctx->app_indicator = indicator;
+                ctx->app_indicator_lib = lib;
+                ctx->fn_set_status = fn_set_status;
+                fprintf(stderr, "[gui] Successfully registered AppIndicator tray icon on taskbar.\n");
+                return;
+            }
+        }
+        dlclose(lib);
+    }
+
+    /* Fallback to legacy GtkStatusIcon if AppIndicator is unavailable */
+    ctx->tray_icon = gtk_status_icon_new();
+    gtk_status_icon_set_tooltip_text(ctx->tray_icon, "WallScape — Live Wallpaper Manager");
+    if (app_icon) {
+        gtk_status_icon_set_from_pixbuf(ctx->tray_icon, app_icon);
+    } else {
+        gtk_status_icon_set_from_icon_name(ctx->tray_icon, "preferences-desktop-wallpaper");
+    }
+    gtk_status_icon_set_visible(ctx->tray_icon, TRUE);
+    g_signal_connect(ctx->tray_icon, "activate", G_CALLBACK(on_tray_activate), ctx);
+    g_signal_connect(ctx->tray_icon, "popup-menu", G_CALLBACK(on_tray_popup_menu), ctx);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1730,21 +1869,8 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
     gtk_style_context_add_class(gtk_widget_get_style_context(ctx->window), "studio-window");
     g_signal_connect(ctx->window, "delete-event", G_CALLBACK(on_window_delete_event), ctx);
 
-    /* ── System Tray Icon ──────────────────────────────────────────────────── */
-    ctx->tray_icon = gtk_status_icon_new();
-    gtk_status_icon_set_tooltip_text(ctx->tray_icon,
-                                     "WallScape — Live Wallpaper Manager");
-    if (app_icon) {
-        gtk_status_icon_set_from_pixbuf(ctx->tray_icon, app_icon);
-    } else {
-        gtk_status_icon_set_from_icon_name(ctx->tray_icon,
-                                           "preferences-desktop-wallpaper");
-    }
-    gtk_status_icon_set_visible(ctx->tray_icon, TRUE);
-    g_signal_connect(ctx->tray_icon, "activate",
-                     G_CALLBACK(on_tray_activate), ctx);
-    g_signal_connect(ctx->tray_icon, "popup-menu",
-                     G_CALLBACK(on_tray_popup_menu), ctx);
+    /* ── System Tray / AppIndicator Icon ──────────────────────────────────── */
+    setup_tray_indicator(ctx, app_icon);
 
     /* UX-6: Keyboard accelerators ─────────────────────────────────────────── */
     GtkAccelGroup *accel_group = gtk_accel_group_new();
@@ -2093,6 +2219,17 @@ void gui_destroy(GuiCtx *ctx)
     if (ctx->bg_settings) {
         g_object_unref(ctx->bg_settings);
         ctx->bg_settings = NULL;
+    }
+    if (ctx->app_indicator) {
+        if (ctx->fn_set_status) {
+            ctx->fn_set_status((AppIndicator *)ctx->app_indicator, APP_INDICATOR_STATUS_PASSIVE);
+        }
+        g_object_unref(ctx->app_indicator);
+        ctx->app_indicator = NULL;
+    }
+    if (ctx->app_indicator_lib) {
+        dlclose(ctx->app_indicator_lib);
+        ctx->app_indicator_lib = NULL;
     }
     if (ctx->tray_icon) {
         gtk_status_icon_set_visible(ctx->tray_icon, FALSE);
