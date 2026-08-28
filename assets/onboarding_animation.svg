@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="front" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5b8cff"/>
+      <stop offset="100%" stop-color="#8a5bff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- App icon background -->
+  <rect width="512" height="512" rx="108" fill="#181a22"/>
+
+  <!-- Back card (still image, most rotated) -->
+  <g transform="translate(196,291) rotate(-16)">
+    <g opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="0.0s" dur="0.6s" fill="freeze"/>
+      <animateTransform attributeName="transform" type="scale" from="0.6" to="1" begin="0.0s" dur="0.6s" fill="freeze"/>
+      <rect x="-110" y="-75" width="220" height="150" rx="20" fill="#3a3d52"/>
+    </g>
+  </g>
+
+  <!-- Middle card (still image) -->
+  <g transform="translate(256,256) rotate(-6)">
+    <g opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="0.15s" dur="0.6s" fill="freeze"/>
+      <animateTransform attributeName="transform" type="scale" from="0.6" to="1" begin="0.15s" dur="0.6s" fill="freeze"/>
+      <rect x="-110" y="-75" width="220" height="150" rx="20" fill="#565a78"/>
+    </g>
+  </g>
+
+  <!-- Front card (active / video wallpaper) -->
+  <g transform="translate(346,224) rotate(6)">
+    <g opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="0.3s" dur="0.6s" fill="freeze"/>
+      <animateTransform attributeName="transform" type="scale" from="0.6" to="1" begin="0.3s" dur="0.6s" fill="freeze"/>
+      <rect x="-120" y="-82" width="240" height="164" rx="22" fill="url(#front)"/>
+    </g>
+
+    <!-- Play badge: pops in after the cards settle, then breathes twice -->
+    <g opacity="0">
+      <animate attributeName="opacity" from="0" to="1" begin="0.9s" dur="0.4s" fill="freeze"/>
+      <animateTransform attributeName="transform" type="scale"
+                         values="0.3;1.2;1" keyTimes="0;0.7;1"
+                         begin="0.9s" dur="0.6s" fill="freeze"/>
+      <circle cx="0" cy="0" r="34" fill="#ffffff" opacity="0.16">
+        <animate attributeName="opacity" values="0.16;0.30;0.16"
+                 begin="1.6s" dur="1.2s" repeatCount="2" fill="freeze"/>
+      </circle>
+      <polygon points="-12,-18 -12,18 20,0" fill="#ffffff"/>
+    </g>
+  </g>
+</svg>

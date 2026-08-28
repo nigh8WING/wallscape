@@ -28,6 +28,8 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <ctype.h>
+#include <math.h>
 #include <dlfcn.h>
 
 #define MAX_WALLPAPERS 256
@@ -66,6 +68,41 @@ static const char *STUDIO_CSS =
 "    background-color: alpha(@theme_base_color, 0.30);"
 "    border: 1px solid alpha(@theme_fg_color, 0.08);"
 "    margin-bottom: 4px;"
+"}"
+".splash-bg {"
+"    background-color: #161821;"
+"}"
+".splash-title {"
+"    font-size: 24px;"
+"    font-weight: 800;"
+"    color: #ffffff;"
+"    letter-spacing: 0.5px;"
+"}"
+".splash-subtitle {"
+"    font-size: 11px;"
+"    color: alpha(#ffffff, 0.65);"
+"    margin-bottom: 4px;"
+"}"
+".splash-skip-btn {"
+"    font-size: 11px;"
+"    padding: 6px 18px;"
+"    border-radius: 20px;"
+"    background-color: alpha(#5b8cff, 0.15);"
+"    border: 1px solid alpha(#5b8cff, 0.40);"
+"    color: #5b8cff;"
+"    font-weight: 600;"
+"    transition: all 120ms ease-in-out;"
+"}"
+".splash-skip-btn:hover {"
+"    background-color: alpha(#5b8cff, 0.30);"
+"    border-color: #5b8cff;"
+"    color: #ffffff;"
+"}"
+".update-notes-container {"
+"    background-color: alpha(@theme_base_color, 0.45);"
+"    border: 1px solid alpha(#3584e4, 0.25);"
+"    border-radius: 8px;"
+"    padding: 10px 14px;"
 "}"
 ".update-btn {"
 "    border-radius: 6px;"
@@ -309,11 +346,22 @@ struct GuiCtx {
     /* Autostart */
     GtkWidget    *autostart_switch;
 
+    /* Onboarding Splash Animation */
+    GtkWidget    *root_stack;
+    GtkWidget    *splash_area;
+    gint64        splash_start_time;
+    guint         splash_tick_id;
+    bool          splash_finished;
+
     guint         render_timer_id;
     double        render_fps;       /* current render timer target FPS */
 };
 
 /* Forward declarations */
+static gboolean on_splash_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data);
+static gboolean on_splash_tick(GtkWidget *widget, GdkFrameClock *frame_clock, gpointer user_data);
+static gboolean on_splash_button_press(GtkWidget *widget, GdkEventButton *event, gpointer user_data);
+static void dismiss_splash(GuiCtx *ctx);
 static gboolean on_render_tick(gpointer user_data);
 static void on_back_btn_clicked(GtkButton *button, gpointer user_data);
 static void on_refresh_btn_clicked(GtkButton *button, gpointer user_data);
@@ -1507,6 +1555,87 @@ static void on_update_download_complete(bool success, bool installed_directly, c
     }
 }
 
+static char *format_release_notes_to_pango(const char *raw_notes)
+{
+    if (!raw_notes || !raw_notes[0]) {
+        return g_strdup("• <b>General performance enhancements and bug fixes.</b>");
+    }
+
+    GString *out = g_string_new(NULL);
+    char **lines = g_strsplit(raw_notes, "\n", -1);
+
+    for (int i = 0; lines[i] != NULL; i++) {
+        char *line = g_strstrip(lines[i]);
+        if (!line[0]) continue;
+
+        /* Skip markdown headings, comparison links, etc. */
+        if (line[0] == '#' || g_str_has_prefix(line, "**Full Changelog**") || g_str_has_prefix(line, "Full Changelog")) {
+            continue;
+        }
+
+        /* Skip leading markdown bullet characters: -, *, + */
+        while (*line == '-' || *line == '*' || *line == '+' || isspace((unsigned char)*line)) {
+            line++;
+        }
+        line = g_strstrip(line);
+        if (!line[0]) continue;
+
+        /* Convert markdown **bold** and `code` syntax to Pango <b> and <tt> */
+        GString *pango_line = g_string_new(NULL);
+        const char *p = line;
+        while (*p) {
+            if (strncmp(p, "**", 2) == 0) {
+                const char *end_bold = strstr(p + 2, "**");
+                if (end_bold) {
+                    g_string_append(pango_line, "<b>");
+                    char *bold_text = g_strndup(p + 2, end_bold - (p + 2));
+                    char *escaped_bold = g_markup_escape_text(bold_text, -1);
+                    g_string_append(pango_line, escaped_bold);
+                    g_free(escaped_bold);
+                    g_free(bold_text);
+                    g_string_append(pango_line, "</b>");
+                    p = end_bold + 2;
+                    continue;
+                }
+            } else if (*p == '`') {
+                const char *end_code = strchr(p + 1, '`');
+                if (end_code) {
+                    g_string_append(pango_line, "<tt>");
+                    char *code_text = g_strndup(p + 1, end_code - (p + 1));
+                    char *escaped_code = g_markup_escape_text(code_text, -1);
+                    g_string_append(pango_line, escaped_code);
+                    g_free(escaped_code);
+                    g_free(code_text);
+                    g_string_append(pango_line, "</tt>");
+                    p = end_code + 1;
+                    continue;
+                }
+            }
+
+            /* Escape individual XML characters */
+            if (*p == '&') g_string_append(pango_line, "&amp;");
+            else if (*p == '<') g_string_append(pango_line, "&lt;");
+            else if (*p == '>') g_string_append(pango_line, "&gt;");
+            else g_string_append_c(pango_line, *p);
+            p++;
+        }
+
+        if (out->len > 0) {
+            g_string_append(out, "\n\n");
+        }
+        g_string_append_printf(out, "• %s", pango_line->str);
+        g_string_free(pango_line, TRUE);
+    }
+
+    g_strfreev(lines);
+
+    if (out->len == 0) {
+        g_string_assign(out, "• <b>General performance enhancements and bug fixes.</b>");
+    }
+
+    return g_string_free(out, FALSE);
+}
+
 static void show_update_dialog(GuiCtx *ctx, const UpdateInfo *info)
 {
     GtkWidget *dialog = gtk_dialog_new_with_buttons(
@@ -1519,17 +1648,17 @@ static void show_update_dialog(GuiCtx *ctx, const UpdateInfo *info)
         NULL);
 
     gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_ACCEPT);
-    gtk_window_set_default_size(GTK_WINDOW(dialog), 420, 240);
+    gtk_window_set_default_size(GTK_WINDOW(dialog), 540, 390);
 
     GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    gtk_container_set_border_width(GTK_CONTAINER(content_area), 16);
+    gtk_container_set_border_width(GTK_CONTAINER(content_area), 18);
 
-    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     gtk_container_add(GTK_CONTAINER(content_area), vbox);
 
     char title_str[256];
     snprintf(title_str, sizeof(title_str),
-             "<span font='13' weight='bold'>🎉 New Version Available: v%s</span>",
+             "<span font='14' weight='bold'>🎉 New Version Available: v%s</span>",
              info->latest_version);
     GtkWidget *title_lbl = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(title_lbl), title_str);
@@ -1538,8 +1667,8 @@ static void show_update_dialog(GuiCtx *ctx, const UpdateInfo *info)
 
     char desc_str[512];
     snprintf(desc_str, sizeof(desc_str),
-             "A newer version of WallScape is available on GitHub.\n"
-             "Installed: <b>v%s</b>  ➜  Latest: <b>v%s</b>",
+             "A newer version of WallScape is ready for installation.\n"
+             "Installed: <span weight='bold'>v%s</span>  ➜  Latest: <span weight='bold' color='#2ec27e'>v%s</span>",
              info->current_version, info->latest_version);
     GtkWidget *desc_lbl = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(desc_lbl), desc_str);
@@ -1548,24 +1677,34 @@ static void show_update_dialog(GuiCtx *ctx, const UpdateInfo *info)
 
     /* What's New in this update header */
     GtkWidget *whats_new_lbl = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(whats_new_lbl), "<b>✨ What's New in this update:</b>");
+    gtk_label_set_markup(GTK_LABEL(whats_new_lbl), "<span weight='bold' font='11'>✨ What's New in this update:</span>");
     gtk_label_set_xalign(GTK_LABEL(whats_new_lbl), 0.0);
     gtk_box_pack_start(GTK_BOX(vbox), whats_new_lbl, FALSE, FALSE, 0);
 
+    /* Card Frame container */
+    GtkWidget *card_frame = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(card_frame), "update-notes-container");
+
     GtkWidget *notes_scr = gtk_scrolled_window_new(NULL, NULL);
     gtk_style_context_add_class(gtk_widget_get_style_context(notes_scr), "gallery-scroll");
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(notes_scr), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-    gtk_widget_set_size_request(notes_scr, -1, 100);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(notes_scr), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(notes_scr, -1, 160);
 
-    const char *notes_text = (info->release_notes[0])
-                             ? info->release_notes
-                             : "• In-Folder Refresh button to dynamically detect and add new files.\n• Universal GPU Hardware Acceleration (VA-API, CUDA, Vulkan, DRM).\n• Fast user-space in-place auto-update with seamless auto-restart.\n• Performance improvements and bug fixes.";
-    GtkWidget *notes_lbl = gtk_label_new(notes_text);
+    char *formatted_notes = format_release_notes_to_pango(info->release_notes);
+    GtkWidget *notes_lbl = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(notes_lbl), formatted_notes);
+    g_free(formatted_notes);
+
     gtk_label_set_line_wrap(GTK_LABEL(notes_lbl), TRUE);
     gtk_label_set_xalign(GTK_LABEL(notes_lbl), 0.0);
     gtk_label_set_yalign(GTK_LABEL(notes_lbl), 0.0);
     gtk_container_add(GTK_CONTAINER(notes_scr), notes_lbl);
-    gtk_box_pack_start(GTK_BOX(vbox), notes_scr, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(card_frame), notes_scr, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), card_frame, TRUE, TRUE, 0);
+
+    /* Style the Accept (Install) button in action area */
+    GtkWidget *action_area = gtk_dialog_get_action_area(GTK_DIALOG(dialog));
+    gtk_container_set_border_width(GTK_CONTAINER(action_area), 10);
 
     gtk_widget_show_all(dialog);
     gint res = gtk_dialog_run(GTK_DIALOG(dialog));
@@ -2021,6 +2160,240 @@ static void setup_tray_indicator(GuiCtx *ctx, GdkPixbuf *app_icon)
     g_signal_connect(ctx->tray_icon, "popup-menu", G_CALLBACK(on_tray_popup_menu), ctx);
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Onboarding Animated Splash Screen
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+static void cairo_rounded_rect(cairo_t *cr, double x, double y, double w, double h, double r)
+{
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, x + w - r, y + r, r, -G_PI / 2.0, 0.0);
+    cairo_arc(cr, x + w - r, y + h - r, r, 0.0, G_PI / 2.0);
+    cairo_arc(cr, x + r, y + h - r, r, G_PI / 2.0, G_PI);
+    cairo_arc(cr, x + r, y + r, r, G_PI, 3.0 * G_PI / 2.0);
+    cairo_close_path(cr);
+}
+
+static gboolean on_splash_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data)
+{
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!ctx) return FALSE;
+
+    int width = gtk_widget_get_allocated_width(widget);
+    int height = gtk_widget_get_allocated_height(widget);
+
+    double t = (double)(g_get_monotonic_time() - ctx->splash_start_time) / 1000000.0;
+    if (t < 0.0) t = 0.0;
+
+    /* Scale 512x512 vector canvas to fit drawing area */
+    double scale = (double)width / 512.0;
+    if ((double)height / 512.0 < scale) scale = (double)height / 512.0;
+
+    cairo_save(cr);
+    cairo_translate(cr, (width - 512.0 * scale) / 2.0, (height - 512.0 * scale) / 2.0);
+    cairo_scale(cr, scale, scale);
+
+    /* 1. App icon background container */
+    cairo_rounded_rect(cr, 0, 0, 512, 512, 108);
+    cairo_set_source_rgb(cr, 0.094, 0.102, 0.133); /* #181a22 */
+    cairo_fill(cr);
+
+    /* 2. Back card (still image, most rotated): translate(196,291) rotate(-16) */
+    {
+        double t_local = t - 0.0;
+        double p = CLAMP(t_local / 0.6, 0.0, 1.0);
+        double opacity = p;
+        double s = 0.6 + 0.4 * p;
+
+        if (opacity > 0.001) {
+            cairo_save(cr);
+            cairo_translate(cr, 196, 291);
+            cairo_rotate(cr, -16.0 * G_PI / 180.0);
+            cairo_scale(cr, s, s);
+            cairo_rounded_rect(cr, -110, -75, 220, 150, 20);
+            cairo_set_source_rgba(cr, 0.227, 0.239, 0.322, opacity); /* #3a3d52 */
+            cairo_fill(cr);
+            cairo_restore(cr);
+        }
+    }
+
+    /* 3. Middle card (still image): translate(256,256) rotate(-6) */
+    {
+        double t_local = t - 0.15;
+        double p = CLAMP(t_local / 0.6, 0.0, 1.0);
+        double opacity = p;
+        double s = 0.6 + 0.4 * p;
+
+        if (opacity > 0.001) {
+            cairo_save(cr);
+            cairo_translate(cr, 256, 256);
+            cairo_rotate(cr, -6.0 * G_PI / 180.0);
+            cairo_scale(cr, s, s);
+            cairo_rounded_rect(cr, -110, -75, 220, 150, 20);
+            cairo_set_source_rgba(cr, 0.337, 0.353, 0.471, opacity); /* #565a78 */
+            cairo_fill(cr);
+            cairo_restore(cr);
+        }
+    }
+
+    /* 4. Front card (active / video wallpaper): translate(346,224) rotate(6) */
+    {
+        double t_local = t - 0.30;
+        double p = CLAMP(t_local / 0.6, 0.0, 1.0);
+        double opacity = p;
+        double s = 0.6 + 0.4 * p;
+
+        if (opacity > 0.001) {
+            cairo_save(cr);
+            cairo_translate(cr, 346, 224);
+            cairo_rotate(cr, 6.0 * G_PI / 180.0);
+            cairo_scale(cr, s, s);
+
+            /* Gradient fill #5b8cff -> #8a5bff */
+            cairo_pattern_t *grad = cairo_pattern_create_linear(-120, -82, 120, 82);
+            cairo_pattern_add_color_stop_rgba(grad, 0.0, 0.357, 0.549, 1.0, opacity);
+            cairo_pattern_add_color_stop_rgba(grad, 1.0, 0.541, 0.357, 1.0, opacity);
+
+            cairo_rounded_rect(cr, -120, -82, 240, 164, 22);
+            cairo_set_source(cr, grad);
+            cairo_fill(cr);
+            cairo_pattern_destroy(grad);
+
+            /* 5. Play badge */
+            double t_badge = t - 0.90;
+            if (t_badge > 0.0) {
+                double p_badge = CLAMP(t_badge / 0.6, 0.0, 1.0);
+                double op_badge = CLAMP(t_badge / 0.4, 0.0, 1.0);
+                double s_badge = 1.0;
+                if (p_badge <= 0.7) {
+                    s_badge = 0.3 + (1.2 - 0.3) * (p_badge / 0.7);
+                } else {
+                    s_badge = 1.2 + (1.0 - 1.2) * ((p_badge - 0.7) / 0.3);
+                }
+
+                cairo_save(cr);
+                cairo_scale(cr, s_badge, s_badge);
+
+                /* Breathing glow circle */
+                double circle_alpha = 0.16;
+                if (t >= 1.6 && t < 4.0) {
+                    double br = fmod(t - 1.6, 1.2) / 1.2;
+                    circle_alpha = 0.16 + 0.14 * sin(br * G_PI);
+                }
+                cairo_arc(cr, 0, 0, 34, 0, 2.0 * G_PI);
+                cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, circle_alpha * op_badge);
+                cairo_fill(cr);
+
+                /* White play triangle */
+                cairo_move_to(cr, -12, -18);
+                cairo_line_to(cr, -12, 18);
+                cairo_line_to(cr, 20, 0);
+                cairo_close_path(cr);
+                cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, op_badge);
+                cairo_fill(cr);
+
+                cairo_restore(cr);
+            }
+
+            cairo_restore(cr);
+        }
+    }
+
+    cairo_restore(cr);
+    return FALSE;
+}
+
+static void dismiss_splash(GuiCtx *ctx)
+{
+    if (!ctx || ctx->splash_finished) return;
+    ctx->splash_finished = true;
+
+    if (ctx->splash_tick_id != 0 && ctx->splash_area) {
+        gtk_widget_remove_tick_callback(ctx->splash_area, ctx->splash_tick_id);
+        ctx->splash_tick_id = 0;
+    }
+
+    if (ctx->root_stack) {
+        gtk_stack_set_visible_child_name(GTK_STACK(ctx->root_stack), "app");
+    }
+}
+
+static gboolean on_splash_tick(GtkWidget *widget, GdkFrameClock *frame_clock, gpointer user_data)
+{
+    (void)frame_clock;
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!ctx || ctx->splash_finished) return G_SOURCE_REMOVE;
+
+    gtk_widget_queue_draw(widget);
+
+    double t = (double)(g_get_monotonic_time() - ctx->splash_start_time) / 1000000.0;
+    if (t >= 2.6) {
+        dismiss_splash(ctx);
+        return G_SOURCE_REMOVE;
+    }
+
+    return G_SOURCE_CONTINUE;
+}
+
+static gboolean on_splash_button_press(GtkWidget *widget, GdkEventButton *event, gpointer user_data)
+{
+    (void)widget;
+    (void)event;
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    dismiss_splash(ctx);
+    return TRUE;
+}
+
+static void on_splash_skip_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    dismiss_splash(ctx);
+}
+
+static GtkWidget *create_splash_view(GuiCtx *ctx)
+{
+    GtkWidget *event_box = gtk_event_box_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(event_box), "splash-bg");
+    g_signal_connect(event_box, "button-press-event", G_CALLBACK(on_splash_button_press), ctx);
+
+    GtkWidget *center_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_widget_set_halign(center_box, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(center_box, GTK_ALIGN_CENTER);
+    gtk_container_add(GTK_CONTAINER(event_box), center_box);
+
+    /* Animated Drawing Area */
+    ctx->splash_area = gtk_drawing_area_new();
+    gtk_widget_set_size_request(ctx->splash_area, 220, 220);
+    g_signal_connect(ctx->splash_area, "draw", G_CALLBACK(on_splash_draw), ctx);
+    gtk_box_pack_start(GTK_BOX(center_box), ctx->splash_area, FALSE, FALSE, 0);
+
+    /* Title */
+    GtkWidget *title_lbl = gtk_label_new("WallScape");
+    gtk_style_context_add_class(gtk_widget_get_style_context(title_lbl), "splash-title");
+    gtk_box_pack_start(GTK_BOX(center_box), title_lbl, FALSE, FALSE, 0);
+
+    /* Subtitle */
+    GtkWidget *sub_lbl = gtk_label_new("Live Video & Static Desktop Wallpaper Studio");
+    gtk_style_context_add_class(gtk_widget_get_style_context(sub_lbl), "splash-subtitle");
+    gtk_box_pack_start(GTK_BOX(center_box), sub_lbl, FALSE, FALSE, 0);
+
+    /* Enter Button / Skip */
+    GtkWidget *btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_halign(btn_box, GTK_ALIGN_CENTER);
+    GtkWidget *skip_btn = gtk_button_new_with_label("Get Started →");
+    gtk_style_context_add_class(gtk_widget_get_style_context(skip_btn), "splash-skip-btn");
+    g_signal_connect(skip_btn, "clicked", G_CALLBACK(on_splash_skip_clicked), ctx);
+    gtk_box_pack_start(GTK_BOX(btn_box), skip_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(center_box), btn_box, FALSE, FALSE, 4);
+
+    ctx->splash_start_time = g_get_monotonic_time();
+    ctx->splash_finished = false;
+    ctx->splash_tick_id = gtk_widget_add_tick_callback(ctx->splash_area, on_splash_tick, ctx, NULL);
+
+    return event_box;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * Public API
  * ═══════════════════════════════════════════════════════════════════════════ */
@@ -2083,9 +2456,22 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
         g_cclosure_new(G_CALLBACK(on_quit_clicked), ctx, NULL));
     g_object_unref(accel_group);
 
-    /* Root Horizontal Box: Sidebar (Left) + Main Content (Right) */
+    /* Root Stack: Splash Onboarding ↔ Main App */
+    ctx->root_stack = gtk_stack_new();
+    gtk_stack_set_transition_type(GTK_STACK(ctx->root_stack), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+    gtk_stack_set_transition_duration(GTK_STACK(ctx->root_stack), 300);
+    gtk_container_add(GTK_CONTAINER(ctx->window), ctx->root_stack);
+
+    /* 1. Splash Page */
+    GtkWidget *splash_page = create_splash_view(ctx);
+    gtk_stack_add_named(GTK_STACK(ctx->root_stack), splash_page, "splash");
+
+    /* 2. Main App Workspace */
     GtkWidget *root_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_container_add(GTK_CONTAINER(ctx->window), root_hbox);
+    gtk_stack_add_named(GTK_STACK(ctx->root_stack), root_hbox, "app");
+
+    /* Default to showing splash */
+    gtk_stack_set_visible_child_name(GTK_STACK(ctx->root_stack), "splash");
 
     /* ═══════════════════════════════════════════════════════════════════════
      * LEFT SIDEBAR
@@ -2488,6 +2874,13 @@ void gui_show(GuiCtx *ctx)
 {
     if (ctx && ctx->window) {
         gtk_widget_show_all(ctx->window);
+        if (ctx->root_stack) {
+            if (ctx->splash_finished) {
+                gtk_stack_set_visible_child_name(GTK_STACK(ctx->root_stack), "app");
+            } else {
+                gtk_stack_set_visible_child_name(GTK_STACK(ctx->root_stack), "splash");
+            }
+        }
         gtk_window_present(GTK_WINDOW(ctx->window));
     }
 }
