@@ -148,18 +148,28 @@ cpack -G DEB
 
 ## 6. Release & Distribution Workflow
 
-### Automated Releases on Push
-1. Bump version in `CMakeLists.txt` (`set(CPACK_PACKAGE_VERSION "X.Y.Z")`) and `src/updater.h` (`#define WALLSCAPE_CURRENT_VERSION "X.Y.Z"`).
-2. Commit and push directly to `main`:
+### Mandatory Versioning Rule for New Features & Bug Fixes
+Every update pushed to `main` that introduces **new features** or **bug fixes** must increment the version number in both [`CMakeLists.txt`](file:///home/user/Coding/Live%20Wallpaper%20Software/CMakeLists.txt) (`set(CPACK_PACKAGE_VERSION "X.Y.Z")`) and [`src/updater.h`](file:///home/user/Coding/Live%20Wallpaper%20Software/src/updater.h) (`#define WALLSCAPE_CURRENT_VERSION "X.Y.Z"`).
+
+#### Versioning Standard (`MAJOR.MINOR.PATCH`):
+- **PATCH Bump (`1.2.0` ➜ `1.2.1`)**: Bug fixes, stability improvements, UI responsiveness fixes, performance optimizations.
+- **MINOR Bump (`1.2.0` ➜ `1.3.0`)**: New features, new capabilities (e.g. multi-folder management, new settings, new format support).
+- **MAJOR Bump (`1.0.0` ➜ `2.0.0`)**: Major architectural redesigns or breaking changes.
+
+### Automated Release Lifecycle:
+1. Bump version in `CMakeLists.txt` and `src/updater.h`.
+2. Commit and push to `main`:
    ```bash
-   git commit -am "chore: bump version to vX.Y.Z"
+   git commit -am "feat/fix: describe changes and bump version to vX.Y.Z"
    git push origin main
    ```
 3. GitHub Actions (`.github/workflows/ci.yml`):
-   - Compiles and builds `wallscape-X.Y.Z-Linux.deb`.
-   - Automatically tags `vX.Y.Z` on Git.
-   - Publishes a new GitHub Release with the `.deb` package attached and generated release notes.
-4. Installed WallScape clients automatically detect the update on next launch and prompt the user with a 1-click update.
+   - Automatically detects the new version tag `vX.Y.Z`.
+   - Compiles WallScape with `-O2` optimizations.
+   - Builds the Debian package `wallscape-X.Y.Z-Linux.deb` with CPack.
+   - Automatically creates the Git tag `vX.Y.Z`.
+   - Publishes the new GitHub Release with generated release notes and the `.deb` asset attached.
+4. Installed WallScape clients automatically detect the new release on startup or via the "Check for Updates" button and prompt the user with a 1-click upgrade.
 
 ---
 
