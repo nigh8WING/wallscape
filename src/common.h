@@ -23,8 +23,10 @@
 #include <stdlib.h>
 #include <pthread.h>
 
-/* Maximum number of buffered decoded frames (decoder → renderer). */
-#define FRAME_QUEUE_CAPACITY 3
+/* Maximum number of buffered decoded frames (decoder → renderer).
+ * 8 slots provides enough headroom for 60fps video without stalling the
+ * decoder thread while the renderer catches up on a slow frame. */
+#define FRAME_QUEUE_CAPACITY 8
 
 /* Maximum file path length. */
 #define LW_MAX_PATH 4096
@@ -144,6 +146,9 @@ void frame_queue_reset(FrameQueue *q);
 typedef struct {
     /* ── Control flags (atomic for cross-thread access) ── */
     atomic_bool quit;           /* true → application is shutting down        */
+    atomic_bool decoder_quit;   /* true → current decoder thread must exit
+                                 * (set by decoder_stop; reset by decoder_start;
+                                 * scoped to one video, NOT the whole app)     */
     atomic_bool paused;         /* true → playback is paused                  */
     atomic_bool playing;        /* true → a video is loaded and active        */
     atomic_bool decoder_ready;  /* true → decoder opened stream, metadata set */

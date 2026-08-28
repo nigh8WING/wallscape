@@ -113,26 +113,74 @@ GdkPixbuf *thumbnail_generate(const char *filepath, int target_w, int target_h)
     }
 
     if (frame_decoded) {
+        int src_w = codec_ctx->width;
+        int src_h = codec_ctx->height;
+
+        /* Compute letterbox/pillarbox dimensions that fit src inside target
+         * without distortion.  Scale to the largest size that fits. */
+        int scaled_w, scaled_h;
+        double src_ratio = (double)src_w / (double)src_h;
+        double dst_ratio = (double)target_w / (double)target_h;
+
+        if (src_ratio > dst_ratio) {
+            /* Wider than target — fit to width, letterbox top/bottom */
+            scaled_w = target_w;
+            scaled_h = (int)(target_w / src_ratio);
+        } else {
+            /* Taller than target — fit to height, pillarbox left/right */
+            scaled_h = target_h;
+            scaled_w = (int)(target_h * src_ratio);
+        }
+        /* Clamp to at least 1 pixel */
+        if (scaled_w < 1) scaled_w = 1;
+        if (scaled_h < 1) scaled_h = 1;
+
+        int offset_x = (target_w - scaled_w) / 2;
+        int offset_y = (target_h - scaled_h) / 2;
+
+        /* Allocate the output pixbuf at full target size (with alpha for
+         * the black bars) */
         pixbuf = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, target_w, target_h);
         if (pixbuf) {
-            uint8_t *pixels = gdk_pixbuf_get_pixels(pixbuf);
-            int rowstride   = gdk_pixbuf_get_rowstride(pixbuf);
+            /* Fill with black */
+            gdk_pixbuf_fill(pixbuf, 0x000000ff);
 
+            uint8_t *pixels  = gdk_pixbuf_get_pixels(pixbuf);
+            int      rowstride = gdk_pixbuf_get_rowstride(pixbuf);
+
+            /* Scale into a temporary buffer at (scaled_w × scaled_h) */
             sws_ctx = sws_getContext(
-                codec_ctx->width, codec_ctx->height, codec_ctx->pix_fmt,
-                target_w, target_h, AV_PIX_FMT_RGB24,
+                src_w, src_h, codec_ctx->pix_fmt,
+                scaled_w, scaled_h, AV_PIX_FMT_RGB24,
                 SWS_BILINEAR, NULL, NULL, NULL);
 
             if (sws_ctx) {
-                uint8_t *dst_data[4] = { pixels, NULL, NULL, NULL };
-                int dst_linesize[4]  = { rowstride, 0, 0, 0 };
+                /* Temporary RGB buffer for the scaled content */
+                int tmp_rowstride = scaled_w * 3;
+                uint8_t *tmp_buf  = (uint8_t *)av_malloc((size_t)(tmp_rowstride * scaled_h));
+                if (tmp_buf) {
+                    uint8_t *dst_data[4]    = { tmp_buf, NULL, NULL, NULL };
+                    int      dst_linesize[4] = { tmp_rowstride, 0, 0, 0 };
 
-                sws_scale(sws_ctx,
-                          (const uint8_t *const *)raw_frame->data,
-                          raw_frame->linesize,
-                          0, codec_ctx->height,
-                          dst_data, dst_linesize);
+                    sws_scale(sws_ctx,
+                              (const uint8_t *const *)raw_frame->data,
+                              raw_frame->linesize,
+                              0, src_h,
+                              dst_data, dst_linesize);
 
+                    /* Blit scaled content into the correct offset in pixbuf */
+                    for (int row = 0; row < scaled_h; row++) {
+                        uint8_t *src_row = tmp_buf + row * tmp_rowstride;
+                        uint8_t *dst_row = pixels
+                                           + (offset_y + row) * rowstride
+                                           + offset_x * 3;
+                        memcpy(dst_row, src_row, (size_t)tmp_rowstride);
+                    }
+                    av_free(tmp_buf);
+                } else {
+                    g_object_unref(pixbuf);
+                    pixbuf = NULL;
+                }
                 sws_freeContext(sws_ctx);
             } else {
                 g_object_unref(pixbuf);
