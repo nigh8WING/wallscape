@@ -2,11 +2,11 @@
 
 All notable changes to WallScape are documented in this file.
 
+## 2.3
+- 🔄 **Reliable Automatic Restart After Update**: Resolved the single-instance D-Bus lock race condition during in-app updates, allowing WallScape to automatically and cleanly relaunch the updated version immediately after installation.
+
 ## 2.2
-- 🎯 **Instant Active Wallpaper Detection**: Synchronous active wallpaper resolution on cold start, ensuring the active card and `✔ Active` badge are immediately visible without delay.
-- ⏱️ **Synchronized Splash Intro**: Live wallpaper activation is deferred until the splash animation finishes, activating smoothly right when the main studio appears.
-- 🤫 **Silent Background Autostart**: System boot and `--no-gui` launch silently in the system tray without opening the main window.
-- 📐 **Universal Aspect-Preserving Scaling**: Strict aspect ratio preservation for both horizontal and vertical videos (e.g. 1080x1920 portrait, 21:9 ultrawide, 16:10, 4:3) — never stretched, distorted, or cropped past screen boundaries.
+- 🎯 Instant Active Wallpaper Detection, Synchronized Splash Intro, and Silent Background Autostart.
 
 ## 2.1
 - 📐 Aspect-Preserving Universal Fit & Initial Splash refinements.

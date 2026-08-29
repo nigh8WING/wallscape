@@ -1535,7 +1535,11 @@ static void on_update_download_complete(bool success, bool installed_directly, c
             } else {
                 snprintf(exec_path, sizeof(exec_path), "live-wallpaper");
             }
-            g_spawn_command_line_async(exec_path, NULL);
+            char restart_cmd[1024];
+            snprintf(restart_cmd, sizeof(restart_cmd), "sh -c 'sleep 0.8 && exec \"%s\"' &", exec_path);
+            int res = system(restart_cmd);
+            (void)res;
+
             GApplication *app = g_application_get_default();
             if (app) {
                 g_application_quit(app);
