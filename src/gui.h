@@ -26,6 +26,11 @@ void gui_destroy(GuiCtx *ctx);
 void gui_show(GuiCtx *ctx);
 
 /*
+ * Set headless / autostart background mode.
+ */
+void gui_set_headless(GuiCtx *ctx, bool headless);
+
+/*
  * Start/stop render timer (~60fps).
  */
 void gui_start_render_timer(GuiCtx *ctx);

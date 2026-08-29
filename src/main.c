@@ -170,6 +170,9 @@ static int app_command_line(GApplication *app, GApplicationCommandLine *cmdline,
     }
 
     if (g_gui) {
+        if (!show_gui) {
+            gui_set_headless(g_gui, true);
+        }
         if (initial_video[0] != '\0' && access(initial_video, R_OK) == 0) {
             fprintf(stderr, "[main] Starting requested video: %s\n", initial_video);
             gui_load_video_and_scan_folder(g_gui, initial_video);

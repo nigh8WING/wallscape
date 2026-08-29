@@ -334,6 +334,8 @@ struct GuiCtx {
 
     /* Live video grid */
     GridView      live_grid;
+    char          active_video_path[LW_MAX_PATH];
+    char          pending_video_path[LW_MAX_PATH];
 
     /* Static image grid */
     GridView      static_grid;
@@ -526,6 +528,18 @@ static void start_live_wallpaper(GuiCtx *ctx, const char *filepath)
         return;
     }
 
+    snprintf(ctx->active_video_path, sizeof(ctx->active_video_path), "%s", filepath);
+
+    /* Update live grid active visuals if currently viewing this item */
+    int active_idx = -1;
+    for (int i = 0; i < ctx->live_grid.count; i++) {
+        if (strcmp(ctx->live_grid.items[i], filepath) == 0) {
+            active_idx = i;
+            break;
+        }
+    }
+    update_grid_visuals(&ctx->live_grid, active_idx);
+
     /* wallpaper_render_frame() auto-sizes the texture on the very first frame,
      * so we can show the window and start the render timer immediately without
      * polling for video_width/height (which would block the GTK main thread). */
@@ -556,6 +570,8 @@ static void stop_live_wallpaper(GuiCtx *ctx)
     decoder_stop(ctx->state);
     atomic_store(&ctx->state->playing, false);
     ctx->state->video_path[0] = '\0';
+    ctx->active_video_path[0] = '\0';
+    ctx->pending_video_path[0] = '\0';
     config_save("");
     wallpaper_hide(ctx->wallpaper);
 
@@ -910,8 +926,10 @@ static void open_folder_view(GuiCtx *ctx, GridView *grid, int folder_idx)
     const char *folder = grid->folders[folder_idx];
 
     if (grid->is_video) {
-        const char *active = (atomic_load(&ctx->state->playing) && ctx->state->video_path[0])
-                             ? ctx->state->video_path : NULL;
+        const char *active = (ctx->active_video_path[0] != '\0')
+                             ? ctx->active_video_path
+                             : ((atomic_load(&ctx->state->playing) && ctx->state->video_path[0])
+                                ? ctx->state->video_path : NULL);
         populate_live_grid(ctx, folder, active);
     } else {
         const char *active = (ctx->active_static_path[0] != '\0')
@@ -1838,6 +1856,8 @@ static gboolean on_restore_folders_idle(gpointer user_data)
 
     int open_live_idx = -1;
     if (has_saved_video) {
+        snprintf(ctx->active_video_path, sizeof(ctx->active_video_path), "%s", saved_video);
+
         for (int i = 0; i < ctx->live_grid.folder_count; i++) {
             if (strncmp(saved_video, ctx->live_grid.folders[i], strlen(ctx->live_grid.folders[i])) == 0) {
                 open_live_idx = i;
@@ -1853,8 +1873,12 @@ static gboolean on_restore_folders_idle(gpointer user_data)
             g_free(dname);
         }
 
-        if (!atomic_load(&ctx->state->playing)) {
-            start_live_wallpaper(ctx, saved_video);
+        if (ctx->splash_finished) {
+            if (!atomic_load(&ctx->state->playing)) {
+                start_live_wallpaper(ctx, saved_video);
+            }
+        } else {
+            snprintf(ctx->pending_video_path, sizeof(ctx->pending_video_path), "%s", saved_video);
         }
     }
 
@@ -1930,8 +1954,7 @@ static void on_tray_activate(GtkStatusIcon *icon, gpointer user_data)
     if (gtk_widget_get_visible(ctx->window)) {
         gtk_widget_hide(ctx->window);
     } else {
-        gtk_widget_show_all(ctx->window);
-        gtk_window_present(GTK_WINDOW(ctx->window));
+        gui_show(ctx);
     }
 }
 
@@ -1940,8 +1963,7 @@ static void on_indicator_show_activate(GtkMenuItem *item, gpointer user_data)
     (void)item;
     GuiCtx *ctx = (GuiCtx *)user_data;
     if (!ctx || !ctx->window) return;
-    gtk_widget_show_all(ctx->window);
-    gtk_window_present(GTK_WINDOW(ctx->window));
+    gui_show(ctx);
 }
 
 static void on_indicator_hide_activate(GtkMenuItem *item, gpointer user_data)
@@ -2318,6 +2340,14 @@ static void dismiss_splash(GuiCtx *ctx)
 
     if (ctx->root_stack) {
         gtk_stack_set_visible_child_name(GTK_STACK(ctx->root_stack), "app");
+    }
+
+    /* Start deferred wallpaper playback now that animation has finished */
+    if (ctx->pending_video_path[0] != '\0') {
+        if (!atomic_load(&ctx->state->playing)) {
+            start_live_wallpaper(ctx, ctx->pending_video_path);
+        }
+        ctx->pending_video_path[0] = '\0';
     }
 }
 
@@ -2791,9 +2821,8 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
     g_signal_connect(quit_btn, "clicked", G_CALLBACK(on_quit_clicked), ctx);
     gtk_box_pack_start(GTK_BOX(bottom_bar), quit_btn, FALSE, FALSE, 0);
 
-    gtk_widget_show_all(ctx->window);
-    /* After show_all, explicitly set both grids to empty state.
-     * populate_*_grid() will switch to "gallery" on the next idle tick.  */
+    /* Keep window hidden initially (shown explicitly via gui_show()).
+     * Explicitly set both grids to empty state. */
     gtk_stack_set_visible_child_name(GTK_STACK(ctx->live_grid.page_stack),   "empty");
     gtk_stack_set_visible_child_name(GTK_STACK(ctx->static_grid.page_stack), "empty");
 
@@ -2869,6 +2898,20 @@ void gui_show(GuiCtx *ctx)
             }
         }
         gtk_window_present(GTK_WINDOW(ctx->window));
+    }
+}
+
+void gui_set_headless(GuiCtx *ctx, bool headless)
+{
+    if (!ctx) return;
+    if (headless) {
+        ctx->splash_finished = true;
+        if (ctx->pending_video_path[0] != '\0') {
+            if (!atomic_load(&ctx->state->playing)) {
+                start_live_wallpaper(ctx, ctx->pending_video_path);
+            }
+            ctx->pending_video_path[0] = '\0';
+        }
     }
 }
 

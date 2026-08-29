@@ -2,12 +2,14 @@
 
 All notable changes to WallScape are documented in this file.
 
+## 2.2
+- 🎯 **Instant Active Wallpaper Detection**: Synchronous active wallpaper resolution on cold start, ensuring the active card and `✔ Active` badge are immediately visible without delay.
+- ⏱️ **Synchronized Splash Intro**: Live wallpaper activation is deferred until the splash animation finishes, activating smoothly right when the main studio appears.
+- 🤫 **Silent Background Autostart**: System boot and `--no-gui` launch silently in the system tray without opening the main window.
+- 📐 **Universal Aspect-Preserving Scaling**: Strict aspect ratio preservation for both horizontal and vertical videos (e.g. 1080x1920 portrait, 21:9 ultrawide, 16:10, 4:3) — never stretched, distorted, or cropped past screen boundaries.
+
 ## 2.1
-- 📐 **Aspect-Preserving Universal Fit**: Automatic aspect ratio preservation for both horizontal and vertical videos (e.g. 1080x1920 portrait, 21:9 ultrawide, 16:10, 4:3) — never stretched, distorted, or cropped past screen boundaries.
-- 🎬 **Smooth Vector Splash Intro**: Elegant vector card deck animation on startup that automatically cross-fades into the app without extra button prompts.
-- 🔄 **In-Folder Refresh**: Dedicated Refresh buttons to discover new video and image wallpapers instantly on the fly.
-- 🚀 **Start on Boot**: One-click autostart option in sidebar and tray menu to resume wallpapers on laptop login.
-- 💅 **Polished Update Dialog**: Clean native bold formatting, spaced bullet points, and modern card container styling.
+- 📐 Aspect-Preserving Universal Fit & Initial Splash refinements.
 
 ## 2.0
 - 🎬 Smooth Vector Splash Intro & Startup refinement.

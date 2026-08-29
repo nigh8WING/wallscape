@@ -68,7 +68,7 @@ cd build
 cpack -G DEB
 ```
 
-This generates `wallscape-2.1-Linux.deb` in the `build/` directory.
+This generates `wallscape-2.2-Linux.deb` in the `build/` directory.
 
 ### 3. System-wide Installation (Direct)
 
@@ -113,14 +113,14 @@ WallScape has a built-in **Auto-Updater** that checks GitHub Releases for new up
 2. Update `CHANGELOG.md` with the new version and highlights.
 3. Commit and push to `main`:
    ```bash
-   git commit -am "feat: release v2.1"
+   git commit -am "feat: release v2.2"
    git push origin main
    ```
 4. GitHub Actions will automatically:
    * Build WallScape on Ubuntu
-   * Package `wallscape-2.1-Linux.deb`
+   * Package `wallscape-2.2-Linux.deb`
    * Extract release notes from `CHANGELOG.md`
-   * Create the tag `v2.1` and publish the GitHub Release with the `.deb` attached
+   * Create the tag `v2.2` and publish the GitHub Release with the `.deb` attached
 5. Existing users running WallScape will automatically receive an update notification prompting them to update with 1 click!
 
 ---
