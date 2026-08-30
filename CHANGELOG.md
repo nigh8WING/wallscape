@@ -2,8 +2,13 @@
 
 All notable changes to WallScape are documented in this file.
 
+## 2.6
+- 🔊 **Live Wallpaper Audio Support**: Full audio decoding and playback for live video wallpapers powered by FFmpeg `libswresample` and SDL2 Audio.
+- 🎛️ **Audio Mute/Unmute Controls**: Quick-toggle button in the bottom control bar and system tray menu, with automatic sensitivity handling for videos with or without audio tracks.
+- 💾 **Audio Preference Persistence**: Seamlessly remembers your mute/unmute state in `config.txt` across laptop restarts.
+
 ## 2.5
-- 📁 **Instant Folder View on Startup**: Fixed the empty folder placeholder issue on startup/boot by synchronizing the inner page stack state after realization, ensuring your wallpapers are immediately visible when opening the app.
+- 📁 Instant Folder View on Startup: Synchronized inner page stack state after realization.
 
 ## 2.4
 - 📁 Instant Folder View on Startup refinement.

@@ -14,12 +14,13 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
 pkg_check_modules(AVCODEC  REQUIRED IMPORTED_TARGET libavcodec)
 pkg_check_modules(AVUTIL   REQUIRED IMPORTED_TARGET libavutil)
-pkg_check_modules(SWSCALE  REQUIRED IMPORTED_TARGET libswscale)
-pkg_check_modules(SDL2     REQUIRED IMPORTED_TARGET sdl2)
-pkg_check_modules(GTK3     REQUIRED IMPORTED_TARGET gtk+-3.0)
-pkg_check_modules(X11      REQUIRED IMPORTED_TARGET x11)
-pkg_check_modules(XFIXES   REQUIRED IMPORTED_TARGET xfixes)
-pkg_check_modules(XEXT     REQUIRED IMPORTED_TARGET xext)
+pkg_check_modules(SWSCALE    REQUIRED IMPORTED_TARGET libswscale)
+pkg_check_modules(SWRESAMPLE REQUIRED IMPORTED_TARGET libswresample)
+pkg_check_modules(SDL2       REQUIRED IMPORTED_TARGET sdl2)
+pkg_check_modules(GTK3       REQUIRED IMPORTED_TARGET gtk+-3.0)
+pkg_check_modules(X11        REQUIRED IMPORTED_TARGET x11)
+pkg_check_modules(XFIXES     REQUIRED IMPORTED_TARGET xfixes)
+pkg_check_modules(XEXT       REQUIRED IMPORTED_TARGET xext)
 
 # Sources
 set(SOURCES
@@ -44,6 +45,7 @@ target_link_libraries(live-wallpaper PRIVATE
     PkgConfig::AVCODEC
     PkgConfig::AVUTIL
     PkgConfig::SWSCALE
+    PkgConfig::SWRESAMPLE
     PkgConfig::SDL2
     PkgConfig::GTK3
     PkgConfig::X11
@@ -81,7 +83,7 @@ install(FILES assets/live-wallpaper.png
 set(CPACK_PACKAGE_NAME "wallscape")
 set(CPACK_PACKAGE_VENDOR "WallScape")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "WallScape - Live Video & Static Desktop Wallpaper Manager for Zorin OS")
-set(CPACK_PACKAGE_VERSION "2.5")
+set(CPACK_PACKAGE_VERSION "2.6")
 set(CPACK_GENERATOR "DEB")
 
 # Debian package metadata

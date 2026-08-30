@@ -323,6 +323,7 @@ struct GuiCtx {
     GtkWidget    *nav_static_btn;
     GtkWidget    *update_btn;
     GtkWidget    *status_label;
+    GtkWidget    *audio_btn;
     GtkWidget    *pause_btn;
     GtkWidget    *stop_btn;
 
@@ -374,6 +375,8 @@ static void on_remove_folder_clicked(GtkWidget *button, gpointer user_data);
 static void on_live_card_clicked(GtkButton *button, gpointer user_data);
 static void on_static_card_clicked(GtkButton *button, gpointer user_data);
 static void on_nav_tab_clicked(GtkButton *button, gpointer user_data);
+static void on_audio_btn_clicked(GtkButton *button, gpointer user_data);
+static void gui_update_audio_btn(GuiCtx *ctx);
 static void on_pause_toggled(GtkButton *button, gpointer user_data);
 static void on_stop_clicked(GtkButton *button, gpointer user_data);
 static void on_quit_clicked(GtkButton *button, gpointer user_data);
@@ -563,6 +566,7 @@ static void start_live_wallpaper(GuiCtx *ctx, const char *filepath)
     char *base = g_path_get_basename(filepath);
     gui_set_status(ctx, "🎬 Loading live wallpaper…");
     g_free(base);
+    gui_update_audio_btn(ctx);
 }
 
 static void stop_live_wallpaper(GuiCtx *ctx)
@@ -583,6 +587,7 @@ static void stop_live_wallpaper(GuiCtx *ctx)
         gtk_button_set_image(GTK_BUTTON(ctx->pause_btn),
                              gtk_image_new_from_icon_name("media-playback-pause-symbolic", GTK_ICON_SIZE_BUTTON));
     }
+    gui_update_audio_btn(ctx);
     gui_set_status(ctx, "Live wallpaper turned off.");
 }
 
@@ -609,6 +614,7 @@ static void apply_static_wallpaper(GuiCtx *ctx, const char *filepath)
         gtk_button_set_image(GTK_BUTTON(ctx->pause_btn),
                              gtk_image_new_from_icon_name("media-playback-pause-symbolic", GTK_ICON_SIZE_BUTTON));
     }
+    gui_update_audio_btn(ctx);
 
     if (static_wallpaper_apply(filepath)) {
         snprintf(ctx->active_static_path, sizeof(ctx->active_static_path), "%s", filepath);
@@ -1417,6 +1423,52 @@ static void on_nav_tab_clicked(GtkButton *button, gpointer user_data)
 /* ─────────────────────────────────────────────────────────────────────────────
  * Control Callbacks
  * ──────────────────────────────────────────────────────────────────────────── */
+static void gui_update_audio_btn(GuiCtx *ctx)
+{
+    if (!ctx || !ctx->audio_btn) return;
+    bool playing = atomic_load(&ctx->state->playing);
+    bool has_audio = atomic_load(&ctx->state->has_audio);
+    bool audio_on = atomic_load(&ctx->state->audio_enabled);
+
+    if (playing && has_audio) {
+        gtk_widget_set_sensitive(ctx->audio_btn, TRUE);
+        if (audio_on) {
+            gtk_button_set_label(GTK_BUTTON(ctx->audio_btn), "Mute");
+            gtk_button_set_image(GTK_BUTTON(ctx->audio_btn),
+                gtk_image_new_from_icon_name("audio-volume-high-symbolic", GTK_ICON_SIZE_BUTTON));
+            gtk_widget_set_tooltip_text(ctx->audio_btn, "Mute wallpaper audio");
+        } else {
+            gtk_button_set_label(GTK_BUTTON(ctx->audio_btn), "Unmute");
+            gtk_button_set_image(GTK_BUTTON(ctx->audio_btn),
+                gtk_image_new_from_icon_name("audio-volume-muted-symbolic", GTK_ICON_SIZE_BUTTON));
+            gtk_widget_set_tooltip_text(ctx->audio_btn, "Unmute wallpaper audio");
+        }
+    } else {
+        gtk_widget_set_sensitive(ctx->audio_btn, FALSE);
+        gtk_button_set_label(GTK_BUTTON(ctx->audio_btn), "Audio");
+        gtk_button_set_image(GTK_BUTTON(ctx->audio_btn),
+            gtk_image_new_from_icon_name("audio-volume-muted-symbolic", GTK_ICON_SIZE_BUTTON));
+        if (playing && !has_audio) {
+            gtk_widget_set_tooltip_text(ctx->audio_btn, "This video does not have an audio track");
+        } else {
+            gtk_widget_set_tooltip_text(ctx->audio_btn, "Wallpaper audio control");
+        }
+    }
+}
+
+static void on_audio_btn_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!ctx) return;
+
+    bool cur = atomic_load(&ctx->state->audio_enabled);
+    bool new_state = !cur;
+    atomic_store(&ctx->state->audio_enabled, new_state);
+    config_save_audio_enabled(new_state);
+    gui_update_audio_btn(ctx);
+    gui_set_status(ctx, new_state ? "🔊 Wallpaper audio enabled." : "🔇 Wallpaper audio muted.");
+}
 static void on_pause_toggled(GtkButton *button, gpointer user_data)
 {
     GuiCtx *ctx = (GuiCtx *)user_data;
@@ -1513,6 +1565,7 @@ static gboolean on_render_tick(gpointer user_data)
                      base, w, h, fps, orient, accel);
             gui_set_status(ctx, buf);
             g_free(base);
+            gui_update_audio_btn(ctx);
 
             /* Re-start the render timer at the video's actual FPS so we don't
              * over-poll (wastes CPU) or under-poll (drops frames). */
@@ -2003,6 +2056,17 @@ static void on_indicator_stop_activate(GtkMenuItem *item, gpointer user_data)
     stop_live_wallpaper(ctx);
 }
 
+static void on_indicator_audio_toggled(GtkCheckMenuItem *item, gpointer user_data)
+{
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!ctx) return;
+    gboolean active = gtk_check_menu_item_get_active(item);
+    atomic_store(&ctx->state->audio_enabled, active);
+    config_save_audio_enabled(active);
+    gui_update_audio_btn(ctx);
+    gui_set_status(ctx, active ? "🔊 Wallpaper audio enabled." : "🔇 Wallpaper audio muted.");
+}
+
 static void on_indicator_autostart_toggled(GtkCheckMenuItem *item, gpointer user_data)
 {
     GuiCtx *ctx = (GuiCtx *)user_data;
@@ -2052,6 +2116,11 @@ static GtkWidget *build_tray_menu(GuiCtx *ctx)
     GtkWidget *item_stop = gtk_menu_item_new_with_label("Turn Off Live Wallpaper");
     g_signal_connect(item_stop, "activate", G_CALLBACK(on_indicator_stop_activate), ctx);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_stop);
+
+    GtkWidget *item_audio = gtk_check_menu_item_new_with_label("Wallpaper Audio");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item_audio), atomic_load(&ctx->state->audio_enabled));
+    g_signal_connect(item_audio, "toggled", G_CALLBACK(on_indicator_audio_toggled), ctx);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_audio);
 
     GtkWidget *item_autostart = gtk_check_menu_item_new_with_label("Start on Laptop Boot");
     gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item_autostart), autostart_is_enabled());
@@ -2827,6 +2896,14 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
     gtk_label_set_ellipsize(GTK_LABEL(ctx->status_label), PANGO_ELLIPSIZE_END);
     gtk_label_set_xalign(GTK_LABEL(ctx->status_label), 0.0);
     gtk_box_pack_start(GTK_BOX(bottom_bar), ctx->status_label, TRUE, TRUE, 0);
+
+    ctx->audio_btn = gtk_button_new_with_label("Audio");
+    gtk_button_set_image(GTK_BUTTON(ctx->audio_btn), gtk_image_new_from_icon_name("audio-volume-muted-symbolic", GTK_ICON_SIZE_BUTTON));
+    gtk_button_set_always_show_image(GTK_BUTTON(ctx->audio_btn), TRUE);
+    gtk_widget_set_sensitive(ctx->audio_btn, FALSE);
+    g_signal_connect(ctx->audio_btn, "clicked", G_CALLBACK(on_audio_btn_clicked), ctx);
+    gtk_box_pack_start(GTK_BOX(bottom_bar), ctx->audio_btn, FALSE, FALSE, 0);
+    gui_update_audio_btn(ctx);
 
     ctx->pause_btn = gtk_button_new_with_label("Pause");
     gtk_button_set_image(GTK_BUTTON(ctx->pause_btn), gtk_image_new_from_icon_name("media-playback-pause-symbolic", GTK_ICON_SIZE_BUTTON));

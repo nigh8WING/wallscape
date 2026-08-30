@@ -97,13 +97,18 @@ static void app_startup(GApplication *app, gpointer user_data)
 
     /* Initialize SDL2 */
     SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS) != 0) {
         fprintf(stderr, "[main] ERROR: Failed to initialize SDL2: %s\n", SDL_GetError());
         g_application_quit(app);
         return;
     }
 
     app_state_init(&g_state);
+
+    bool audio_pref = false;
+    if (config_load_audio_enabled(&audio_pref)) {
+        atomic_store(&g_state.audio_enabled, audio_pref);
+    }
 
     /* Create Wallpaper Window */
     int screen_w = 0, screen_h = 0;

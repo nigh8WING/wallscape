@@ -54,6 +54,12 @@ bool config_load_static_path(char *path_out, int max_len);
 /* Save the last-used active static wallpaper path. */
 bool config_save_static_path(const char *path);
 
+/* Load audio enabled preference. Returns true if found. */
+bool config_load_audio_enabled(bool *enabled_out);
+
+/* Save audio enabled preference. */
+bool config_save_audio_enabled(bool enabled);
+
 /* Check if autostart on system boot/login is currently enabled. */
 bool autostart_is_enabled(void);
 

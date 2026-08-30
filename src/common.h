@@ -160,6 +160,8 @@ typedef struct {
     double video_fps;           /* frames per second (set before ready flag)  */
     char   hw_accel_name[64];   /* e.g. "VA-API (Intel/AMD)", "CUDA", "CPU"   */
     bool   hw_accel_active;
+    atomic_bool audio_enabled;  /* atomic: true = sound on, false = muted     */
+    atomic_bool has_audio;      /* atomic: true = video has an audio stream   */
 
     /* ── Screen / display info ── */
     int    screen_width;
