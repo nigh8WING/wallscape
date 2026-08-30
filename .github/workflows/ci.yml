@@ -112,8 +112,8 @@ jobs:
         with:
           name: wallscape-windows-packages
           path: |
-            build/*.exe
-            build/*.zip
+            build/wallscape-*.exe
+            build/wallscape-*.zip
 
   publish-release:
     name: Publish Release (Linux & Windows)
