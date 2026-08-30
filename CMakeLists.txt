@@ -109,11 +109,10 @@ else()
     install(FILES assets/live-wallpaper.png assets/live-wallpaper.ico
         DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
-    if(EXISTS "${CMAKE_CURRENT_BINARY_DIR}/windows_deploy")
-        install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/windows_deploy/"
-            DESTINATION "."
-        )
-    endif()
+    install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/windows_deploy/"
+        DESTINATION "."
+        OPTIONAL
+    )
 endif()
 
 # ==========================================
@@ -140,6 +139,12 @@ if(WIN32)
     set(CPACK_NSIS_MENU_LINKS
         "bin/live-wallpaper.exe" "WallScape"
     )
+    set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS "
+        CreateShortCut \\\"$DESKTOP\\\\WallScape.lnk\\\" \\\"$INSTDIR\\\\bin\\\\live-wallpaper.exe\\\" \\\"\\\" \\\"$INSTDIR\\\\bin\\\\live-wallpaper.ico\\\"
+    ")
+    set(CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS "
+        Delete \\\"$DESKTOP\\\\WallScape.lnk\\\"
+    ")
 else()
     set(CPACK_GENERATOR "DEB")
     set(CPACK_DEBIAN_PACKAGE_MAINTAINER "WallScape Developer <support@wallscape.local>")
