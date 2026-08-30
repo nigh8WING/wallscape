@@ -116,14 +116,23 @@ jobs:
           gather_dlls() {
             local target="$1"
             for dll in $(ldd "$target" 2>/dev/null | grep -i '/mingw64/' | awk '{print $3}'); do
-              local base=$(basename "$dll")
-              if [ ! -f "build/windows_deploy/bin/$base" ]; then
-                cp -p "$dll" build/windows_deploy/bin/
-                gather_dlls "$dll"
+              if [ -f "$dll" ]; then
+                local base=$(basename "$dll")
+                if [ ! -f "build/windows_deploy/bin/$base" ]; then
+                  cp -p "$dll" build/windows_deploy/bin/
+                  gather_dlls "$dll"
+                fi
               fi
             done
           }
           gather_dlls build/live-wallpaper.exe
+
+          # Explicitly ensure all core library dependencies from /mingw64/bin are bundled
+          for pattern in 'avcodec*.dll' 'avformat*.dll' 'avutil*.dll' 'swscale*.dll' 'swresample*.dll' 'postproc*.dll' 'SDL2*.dll' 'libgtk*.dll' 'libgdk*.dll' 'libgio*.dll' 'libglib*.dll' 'libgobject*.dll' 'libcairo*.dll' 'libpango*.dll' 'libharfbuzz*.dll' 'libfontconfig*.dll' 'libfreetype*.dll' 'libepoxy*.dll' 'libatk*.dll' 'libintl*.dll' 'libiconv*.dll' 'zlib*.dll' 'libwinpthread*.dll' 'libgcc*.dll' 'libstdc*.dll' 'libffi*.dll' 'libfribidi*.dll' 'libdatrie*.dll' 'libthai*.dll' 'libgraphite2*.dll' 'libxml2*.dll' 'librsvg*.dll' 'libpng*.dll' 'libjpeg*.dll' 'libtiff*.dll' 'libwebp*.dll' 'libzstd*.dll' 'liblzma*.dll' 'libbz2*.dll' 'libbrotli*.dll'; do
+            for f in /mingw64/bin/$pattern; do
+              [ -f "$f" ] && cp -u "$f" build/windows_deploy/bin/
+            done
+          done
 
           # 2. GTK3 schemas
           cp -rp /mingw64/share/glib-2.0/schemas/* build/windows_deploy/share/glib-2.0/schemas/
