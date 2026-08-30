@@ -3,7 +3,8 @@
 All notable changes to WallScape are documented in this file.
 
 ## 2.7
-- 🪟 **Official Windows 11 Edition & Installer**: Native Windows 11 live video & static wallpaper support with NSIS Setup Installer (`.exe`) and portable archive (`.zip`).
+- 🪟 **Official Windows 11 Edition & Zero-Dependency Installer**: Native Windows 11 live video & static wallpaper support with complete bundled runtime DLLs, GTK schemas, and GdkPixbuf loaders in NSIS Setup Installer (`.exe`) and portable archive (`.zip`).
+- 🎨 **Official Software Branding & Icons**: Embedded multi-resolution `.ico` into Windows executable resources, NSIS installer header, and desktop shortcuts.
 - 🎬 **Windows Desktop WorkerW Hooking**: Seamless video background rendering behind desktop icons and taskbar via Progman/WorkerW.
 - ⚡ **Direct3D 11 Hardware Acceleration**: D3D11VA, DXVA2, CUDA, and Intel QSV decoding on Windows.
 - 🚀 **High-Performance Thumbnail Queue**: Replaced concurrent per-item threads with a dedicated sequential background worker queue, keeping RAM flat (~30MB) and completely eliminating freezes or crashes when opening large folders with 27+ HD/4K videos.

@@ -2625,6 +2625,49 @@ static GtkWidget *create_splash_view(GuiCtx *ctx)
     return event_box;
 }
 
+static GdkPixbuf *load_wallscape_app_icon(void)
+{
+    GtkIconTheme *icon_theme = gtk_icon_theme_get_default();
+    GdkPixbuf *app_icon = gtk_icon_theme_load_icon(icon_theme, "live-wallpaper",
+                                                    64, GTK_ICON_LOOKUP_USE_BUILTIN, NULL);
+    if (app_icon) return app_icon;
+
+#ifdef _WIN32
+    char exe_dir[MAX_PATH] = {0};
+    GetModuleFileNameA(NULL, exe_dir, sizeof(exe_dir));
+    char *last_slash = strrchr(exe_dir, '\\');
+    if (last_slash) *last_slash = '\0';
+
+    const char *win_candidates[] = {
+        "\\live-wallpaper.png",
+        "\\assets\\live-wallpaper.png",
+        "\\..\\share\\icons\\hicolor\\48x48\\apps\\live-wallpaper.png"
+    };
+    for (size_t i = 0; i < sizeof(win_candidates)/sizeof(win_candidates[0]); i++) {
+        char path[MAX_PATH];
+        snprintf(path, sizeof(path), "%s%s", exe_dir, win_candidates[i]);
+        if (access(path, R_OK) == 0) {
+            app_icon = gdk_pixbuf_new_from_file(path, NULL);
+            if (app_icon) return app_icon;
+        }
+    }
+#endif
+
+    const char *candidates[] = {
+        "assets/live-wallpaper.png",
+        "assets/live-wallpaper.svg",
+        "live-wallpaper.png",
+        NULL
+    };
+    for (int i = 0; candidates[i]; i++) {
+        if (access(candidates[i], R_OK) == 0) {
+            app_icon = gdk_pixbuf_new_from_file(candidates[i], NULL);
+            if (app_icon) return app_icon;
+        }
+    }
+    return NULL;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * Public API
  * ═══════════════════════════════════════════════════════════════════════════ */
@@ -2652,18 +2695,8 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
     gtk_window_set_default_size(GTK_WINDOW(ctx->window), 780, 520);
     gtk_window_set_position(GTK_WINDOW(ctx->window), GTK_WIN_POS_CENTER);
 
-    /* Set Application Icon — MEM-2: Use the icon theme (works after install and
-     * during development if the icon is installed in the hicolor theme).
-     * Fall back to a generic wallpaper icon if not found. */
-    GtkIconTheme *icon_theme = gtk_icon_theme_get_default();
-    GdkPixbuf *app_icon = gtk_icon_theme_load_icon(icon_theme, "live-wallpaper",
-                                                    64, GTK_ICON_LOOKUP_USE_BUILTIN, NULL);
-    if (!app_icon) {
-        /* Development fallback: try the local assets/ path relative to CWD */
-        GError *err = NULL;
-        app_icon = gdk_pixbuf_new_from_file("assets/live-wallpaper.svg", &err);
-        if (err) g_error_free(err);
-    }
+    /* Set Application Icon */
+    GdkPixbuf *app_icon = load_wallscape_app_icon();
     if (app_icon) {
         gtk_window_set_icon(GTK_WINDOW(ctx->window), app_icon);
     }

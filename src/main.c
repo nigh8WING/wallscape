@@ -91,7 +91,38 @@ static void setup_signals(void)
  * ──────────────────────────────────────────────────────────────────────────── */
 static void setup_display_environment(void)
 {
-#ifndef _WIN32
+#ifdef _WIN32
+    /* Ensure GTK3, GIO, and GdkPixbuf locate schemas and loaders relative to the executable */
+    char exe_dir[MAX_PATH] = {0};
+    GetModuleFileNameA(NULL, exe_dir, sizeof(exe_dir));
+    char *last_slash = strrchr(exe_dir, '\\');
+    if (last_slash) *last_slash = '\0';
+
+    char root_dir[MAX_PATH] = {0};
+    snprintf(root_dir, sizeof(root_dir), "%s", exe_dir);
+    char *bin_p = strstr(root_dir, "\\bin");
+    if (bin_p && *(bin_p + 4) == '\0') {
+        *bin_p = '\0';
+    }
+
+    char schemas_path[MAX_PATH];
+    snprintf(schemas_path, sizeof(schemas_path), "%s\\share\\glib-2.0\\schemas", root_dir);
+    if (access(schemas_path, 0) == 0) {
+        _putenv_s("GSETTINGS_SCHEMA_DIR", schemas_path);
+    }
+
+    char loaders_cache[MAX_PATH];
+    snprintf(loaders_cache, sizeof(loaders_cache), "%s\\lib\\gdk-pixbuf-2.0\\2.10.0\\loaders.cache", root_dir);
+    if (access(loaders_cache, 0) == 0) {
+        _putenv_s("GDK_PIXBUF_MODULE_FILE", loaders_cache);
+    }
+
+    char pixbuf_mod_dir[MAX_PATH];
+    snprintf(pixbuf_mod_dir, sizeof(pixbuf_mod_dir), "%s\\lib\\gdk-pixbuf-2.0\\2.10.0\\loaders", root_dir);
+    if (access(pixbuf_mod_dir, 0) == 0) {
+        _putenv_s("GDK_PIXBUF_MODULEDIR", pixbuf_mod_dir);
+    }
+#else
     const char *wayland_display = getenv("WAYLAND_DISPLAY");
     const char *session_type = getenv("XDG_SESSION_TYPE");
 
