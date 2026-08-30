@@ -210,9 +210,13 @@ static int app_command_line(GApplication *app, GApplicationCommandLine *cmdline,
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             g_application_command_line_print(cmdline,
+#ifdef _WIN32
+                "WallScape — Live Video & Static Desktop Wallpaper Studio for Windows 11\n\n"
+#else
                 "WallScape — Live Wallpaper Manager for Zorin OS / GNOME (X11 & Wayland)\n\n"
+#endif
                 "Usage:\n"
-                "  wallscape [options] [video_file]\n\n"
+                "  live-wallpaper [options] [video_file]\n\n"
                 "Options:\n"
                 "  -h, --help       Show this help message\n"
                 "  -v, --version    Show version information\n"
@@ -281,7 +285,11 @@ static void app_shutdown(GApplication *app, gpointer user_data)
 
 static void print_usage(const char *prog_name)
 {
+#ifdef _WIN32
+    printf("WallScape — Live Video & Static Desktop Wallpaper Studio for Windows 11\n\n");
+#else
     printf("WallScape — Live Wallpaper Manager for Zorin OS / GNOME (X11 & Wayland)\n\n");
+#endif
     printf("Usage:\n");
     printf("  %s [options] [video_file]\n\n", prog_name);
     printf("Options:\n");
