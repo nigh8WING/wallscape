@@ -87,6 +87,10 @@ jobs:
             mingw-w64-x86_64-ffmpeg
             mingw-w64-x86_64-SDL2
             mingw-w64-x86_64-nsis
+            mingw-w64-x86_64-adwaita-icon-theme
+            mingw-w64-x86_64-hicolor-icon-theme
+            mingw-w64-x86_64-gdk-pixbuf2
+            mingw-w64-x86_64-librsvg
 
       - name: Configure CMake
         shell: msys2 {0}
@@ -99,6 +103,46 @@ jobs:
         shell: msys2 {0}
         run: |
           cmake --build build --config Release
+
+      - name: Deploy Windows Runtime Dependencies
+        shell: msys2 {0}
+        run: |
+          mkdir -p build/windows_deploy/bin
+          mkdir -p build/windows_deploy/share/glib-2.0/schemas
+          mkdir -p build/windows_deploy/lib/gdk-pixbuf-2.0/2.10.0/loaders
+          mkdir -p build/windows_deploy/share/icons
+
+          # 1. Copy all transitive DLLs using recursive dependency discovery
+          gather_dlls() {
+            local target="$1"
+            for dll in $(ldd "$target" 2>/dev/null | grep -i '/mingw64/' | awk '{print $3}'); do
+              local base=$(basename "$dll")
+              if [ ! -f "build/windows_deploy/bin/$base" ]; then
+                cp -p "$dll" build/windows_deploy/bin/
+                gather_dlls "$dll"
+              fi
+            done
+          }
+          gather_dlls build/live-wallpaper.exe
+
+          # 2. GTK3 schemas
+          cp -rp /mingw64/share/glib-2.0/schemas/* build/windows_deploy/share/glib-2.0/schemas/
+          glib-compile-schemas build/windows_deploy/share/glib-2.0/schemas
+
+          # 3. GdkPixbuf loaders & cache
+          cp -rp /mingw64/lib/gdk-pixbuf-2.0/2.10.0/loaders/*.dll build/windows_deploy/lib/gdk-pixbuf-2.0/2.10.0/loaders/ 2>/dev/null || true
+          for loader in build/windows_deploy/lib/gdk-pixbuf-2.0/2.10.0/loaders/*.dll; do
+            [ -f "$loader" ] && gather_dlls "$loader"
+          done
+          gdk-pixbuf-query-loaders > build/windows_deploy/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache 2>/dev/null || true
+
+          # 4. Icon themes
+          if [ -d /mingw64/share/icons/Adwaita ]; then
+            cp -rp /mingw64/share/icons/Adwaita build/windows_deploy/share/icons/
+          fi
+          if [ -d /mingw64/share/icons/hicolor ]; then
+            cp -rp /mingw64/share/icons/hicolor build/windows_deploy/share/icons/
+          fi
 
       - name: Package Windows Installer & ZIP
         shell: msys2 {0}

@@ -64,7 +64,8 @@ set(SOURCES
 
 # Executable target
 if(WIN32)
-    # Build as Windows GUI application (no persistent console window)
+    # Build as Windows GUI application with embedded app icon resource
+    set(SOURCES ${SOURCES} src/resource.rc)
     add_executable(live-wallpaper WIN32 ${SOURCES})
 else()
     add_executable(live-wallpaper ${SOURCES})
@@ -105,9 +106,14 @@ if(NOT WIN32)
         RENAME live-wallpaper.png
     )
 else()
-    install(FILES assets/live-wallpaper.png
+    install(FILES assets/live-wallpaper.png assets/live-wallpaper.ico
         DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
+    if(EXISTS "${CMAKE_CURRENT_BINARY_DIR}/windows_deploy")
+        install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/windows_deploy/"
+            DESTINATION "."
+        )
+    endif()
 endif()
 
 # ==========================================
@@ -126,6 +132,14 @@ if(WIN32)
     set(CPACK_NSIS_MODIFY_PATH ON)
     set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
     set(CPACK_PACKAGE_INSTALL_DIRECTORY "WallScape")
+    set(CPACK_NSIS_EXECUTABLES_DIRECTORY "bin")
+    set(CPACK_NSIS_MUI_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/live-wallpaper.ico")
+    set(CPACK_NSIS_MUI_UNIICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/live-wallpaper.ico")
+    set(CPACK_PACKAGE_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/live-wallpaper.png")
+    set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\live-wallpaper.exe")
+    set(CPACK_NSIS_MENU_LINKS
+        "bin/live-wallpaper.exe" "WallScape"
+    )
 else()
     set(CPACK_GENERATOR "DEB")
     set(CPACK_DEBIAN_PACKAGE_MAINTAINER "WallScape Developer <support@wallscape.local>")
