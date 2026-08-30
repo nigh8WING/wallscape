@@ -284,6 +284,22 @@ bool config_save_static_path(const char *path)
     return config_save_key("static_path=", path);
 }
 
+bool config_load_audio_enabled(bool *enabled_out)
+{
+    if (!enabled_out) return false;
+    char val[32] = {0};
+    if (config_load_key("audio_enabled=", val, sizeof(val)) && val[0] != '\0') {
+        *enabled_out = (strcmp(val, "1") == 0 || strcasecmp(val, "true") == 0);
+        return true;
+    }
+    return false;
+}
+
+bool config_save_audio_enabled(bool enabled)
+{
+    return config_save_key("audio_enabled=", enabled ? "1" : "0");
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * Autostart Management (~/.config/autostart/live-wallpaper.desktop)
  * ──────────────────────────────────────────────────────────────────────────── */

@@ -35,7 +35,7 @@
   - **System Tray & Taskbar Integration**: Taskbar and indicator menu (Show/Hide, Turn Off, Start on Boot, Quit) and taskbar suppression (`skip_taskbar_hint`).
   - **Dynamic FPS-Matched Render Loop**: Automatically synchronizes GTK timer tick intervals to video stream frame rate (e.g. ~41ms for 24fps, ~16ms for 60fps) to eliminate wasted CPU cycles.
   - **Multi-Desktop Sticky Rendering**: Runtime EWMH `_NET_WM_STATE_STICKY` + `_NET_WM_DESKTOP = 0xFFFFFFFF` ClientMessage signaling so live wallpapers persist across all virtual workspaces.
-  - **One-Click Native Debian Packaging (.deb)**: Integrated CPack Debian generator (`wallscape-2.3-Linux.deb`) for double-click installation via Zorin OS App Center.
+  - **One-Click Native Debian Packaging (.deb)**: Integrated CPack Debian generator (`wallscape-2.7-Linux.deb`) for double-click installation via Zorin OS App Center.
   - **Automatic In-Place Seamless Auto-Updater**: Background updater querying GitHub Releases API with 1-click update download, extraction, and instant restart into user-space (`~/.local/share/wallscape/`).
   - **Polished Markdown Release Notes**: Real-time markdown parser converting changelog entries into native bold headers, code tags, and spaced bullet points in a 540x390 modal dialog.
   - **Automated Commit-Triggered CI/CD**: GitHub Actions pipeline that automatically detects version bumps in `CMakeLists.txt`, builds `.deb` packages, creates Git tags, extracts changelog notes, and publishes GitHub Releases on push to `main`.
@@ -76,7 +76,7 @@
 │  │   [🖼️ Static Wallpapers]│     - Root Folders View (Folder Cards)      │  │
 │  │   --------------------  │     - Inside Grid + [Refresh] Button        │  │
 │  │   [Start on Boot]       │  2. Static Wallpapers Tab:                  │  │
-│  │   v2.3                  │     - Root Folders View (Folder Cards)      │  │
+│  │   v2.7                  │     - Root Folders View (Folder Cards)      │  │
 │  │   [Check for Updates]   │     - Inside Grid + [Refresh] Button        │  │
 │  │                         │  - Navigation: [← Folders] & [+ Add Folder] │  │
 │  │                         │  - Active Badges (✔ Active)                 │  │
@@ -159,8 +159,8 @@ cpack -G DEB
 ### Mandatory Versioning Rule for New Features & Bug Fixes
 Every update pushed to `main` that introduces **new features** or **bug fixes** must increment the version number in both [`CMakeLists.txt`](file:///home/user/Coding/Live%20Wallpaper%20Software/CMakeLists.txt) (`set(CPACK_PACKAGE_VERSION "X.Y")`) and [`src/updater.h`](file:///home/user/Coding/Live%20Wallpaper%20Software/src/updater.h) (`#define WALLSCAPE_CURRENT_VERSION "X.Y"`).
 
-#### Versioning Standard (`1.1 ➜ 1.9 ➜ 2.0 ➜ 2.3`):
-- **Incremental Decimal Progression**: Versions progress sequentially: `1.1` ➜ `1.9` ➜ `2.0` ➜ `2.3` ➜ `2.9` ➜ `3.0`.
+#### Versioning Standard (`1.1 ➜ 1.9 ➜ 2.0 ➜ 2.7`):
+- **Incremental Decimal Progression**: Versions progress sequentially: `1.1` ➜ `1.9` ➜ `2.0` ➜ `2.7` ➜ `2.9` ➜ `3.0`.
 
 ### Automated In-Place User-Space Auto-Update Lifecycle:
 1. Update [`CHANGELOG.md`](file:///home/user/Coding/Live%20Wallpaper%20Software/CHANGELOG.md) with what's new.

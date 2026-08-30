@@ -18,9 +18,10 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
 pkg_check_modules(AVCODEC  REQUIRED IMPORTED_TARGET libavcodec)
 pkg_check_modules(AVUTIL   REQUIRED IMPORTED_TARGET libavutil)
-pkg_check_modules(SWSCALE  REQUIRED IMPORTED_TARGET libswscale)
-pkg_check_modules(SDL2     REQUIRED IMPORTED_TARGET sdl2)
-pkg_check_modules(GTK3     REQUIRED IMPORTED_TARGET gtk+-3.0)
+pkg_check_modules(SWSCALE    REQUIRED IMPORTED_TARGET libswscale)
+pkg_check_modules(SWRESAMPLE REQUIRED IMPORTED_TARGET libswresample)
+pkg_check_modules(SDL2       REQUIRED IMPORTED_TARGET sdl2)
+pkg_check_modules(GTK3       REQUIRED IMPORTED_TARGET gtk+-3.0)
 
 # Platform-specific dependencies
 if(WIN32)
@@ -76,6 +77,7 @@ target_link_libraries(live-wallpaper PRIVATE
     PkgConfig::AVCODEC
     PkgConfig::AVUTIL
     PkgConfig::SWSCALE
+    PkgConfig::SWRESAMPLE
     PkgConfig::SDL2
     PkgConfig::GTK3
     ${PLATFORM_LIBS}
@@ -114,7 +116,7 @@ endif()
 set(CPACK_PACKAGE_NAME "wallscape")
 set(CPACK_PACKAGE_VENDOR "WallScape")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "WallScape - Live Video & Static Desktop Wallpaper Studio")
-set(CPACK_PACKAGE_VERSION "2.4")
+set(CPACK_PACKAGE_VERSION "2.7")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 
 if(WIN32)

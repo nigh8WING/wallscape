@@ -27,10 +27,14 @@
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
+#include <libswresample/swresample.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/time.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/opt.h>
+#include <libavutil/channel_layout.h>
+#include <SDL2/SDL.h>
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Internal decoder context — lives on the decoder thread.
@@ -51,6 +55,15 @@ typedef struct {
     AVFrame           *frame_raw;       /* as-decoded frame (may be HW surface) */
     AVFrame           *frame_yuv;       /* converted to YUV420P            */
     uint8_t           *yuv_buffer;      /* pixel buffer for frame_yuv      */
+
+    /* Audio stream & decoding */
+    int                audio_stream_idx;
+    AVCodecContext    *audio_codec_ctx;
+    SwrContext        *swr_ctx;
+    AVFrame           *frame_audio;
+    uint8_t           *audio_buf;
+    int                audio_buf_size;
+    SDL_AudioDeviceID  audio_dev;
 
     /* Timing */
     double             time_base;       /* seconds per PTS tick            */
@@ -288,8 +301,65 @@ static int decoder_ctx_open(DecoderCtx *d, AppState *state, const char *filepath
     atomic_store(&state->video_width,  w);
     atomic_store(&state->video_height, h);
 
-    fprintf(stderr, "[decoder] opened '%s': %dx%d @ %.2f fps, codec=%s, accel=%s\n",
-            filepath, w, h, state->video_fps, codec->name, state->hw_accel_name);
+    /* Search for audio stream */
+    d->audio_stream_idx = -1;
+    for (unsigned i = 0; i < d->fmt_ctx->nb_streams; i++) {
+        if (d->fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            d->audio_stream_idx = (int)i;
+            break;
+        }
+    }
+
+    if (d->audio_stream_idx >= 0) {
+        AVStream *astream = d->fmt_ctx->streams[d->audio_stream_idx];
+        AVCodecParameters *acodecpar = astream->codecpar;
+        const AVCodec *acodec = avcodec_find_decoder(acodecpar->codec_id);
+        if (acodec) {
+            d->audio_codec_ctx = avcodec_alloc_context3(acodec);
+            if (d->audio_codec_ctx && avcodec_parameters_to_context(d->audio_codec_ctx, acodecpar) >= 0) {
+                if (avcodec_open2(d->audio_codec_ctx, acodec, NULL) == 0) {
+                    d->frame_audio = av_frame_alloc();
+
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100)
+                    AVChannelLayout out_layout = AV_CHANNEL_LAYOUT_STEREO;
+                    swr_alloc_set_opts2(&d->swr_ctx,
+                                        &out_layout, AV_SAMPLE_FMT_S16, 48000,
+                                        &d->audio_codec_ctx->ch_layout, d->audio_codec_ctx->sample_fmt, d->audio_codec_ctx->sample_rate,
+                                        0, NULL);
+#else
+                    int64_t in_layout = d->audio_codec_ctx->channel_layout ? d->audio_codec_ctx->channel_layout : av_get_default_channel_layout(d->audio_codec_ctx->channels);
+                    d->swr_ctx = swr_alloc_set_opts(NULL,
+                                                    AV_CH_LAYOUT_STEREO, AV_SAMPLE_FMT_S16, 48000,
+                                                    in_layout, d->audio_codec_ctx->sample_fmt, d->audio_codec_ctx->sample_rate,
+                                                    0, NULL);
+#endif
+                    if (d->swr_ctx && swr_init(d->swr_ctx) == 0) {
+                        SDL_AudioSpec wanted, obtained;
+                        memset(&wanted, 0, sizeof(wanted));
+                        wanted.freq = 48000;
+                        wanted.format = AUDIO_S16SYS;
+                        wanted.channels = 2;
+                        wanted.samples = 1024;
+                        wanted.callback = NULL;
+
+                        d->audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted, &obtained, 0);
+                        if (d->audio_dev > 0) {
+                            SDL_PauseAudioDevice(d->audio_dev, 0);
+                            atomic_store(&state->has_audio, true);
+                            fprintf(stderr, "[decoder] audio ready: %s -> 48000Hz S16 Stereo\n", acodec->name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (d->audio_dev <= 0) {
+        atomic_store(&state->has_audio, false);
+    }
+
+    fprintf(stderr, "[decoder] opened '%s': %dx%d @ %.2f fps, codec=%s, accel=%s, audio=%s\n",
+            filepath, w, h, state->video_fps, codec->name, state->hw_accel_name,
+            atomic_load(&state->has_audio) ? "yes" : "no");
 
     atomic_store(&state->decoder_ready, true);
     return 0;
@@ -300,14 +370,23 @@ static int decoder_ctx_open(DecoderCtx *d, AppState *state, const char *filepath
  * ──────────────────────────────────────────────────────────────────────────── */
 static void decoder_ctx_close(DecoderCtx *d)
 {
-    if (d->sws_ctx)       { sws_freeContext(d->sws_ctx);    d->sws_ctx = NULL; }
-    if (d->frame_raw)     { av_frame_free(&d->frame_raw); }
-    if (d->frame_sw)      { av_frame_free(&d->frame_sw); }
-    if (d->frame_yuv)     { av_frame_free(&d->frame_yuv); }
-    if (d->yuv_buffer)    { av_free(d->yuv_buffer);         d->yuv_buffer = NULL; }
-    if (d->hw_device_ctx) { av_buffer_unref(&d->hw_device_ctx); }
-    if (d->codec_ctx)     { avcodec_free_context(&d->codec_ctx); }
-    if (d->fmt_ctx)       { avformat_close_input(&d->fmt_ctx); }
+    if (d->audio_dev > 0) {
+        SDL_CloseAudioDevice(d->audio_dev);
+        d->audio_dev = 0;
+    }
+    if (d->swr_ctx)         { swr_free(&d->swr_ctx);           d->swr_ctx = NULL; }
+    if (d->frame_audio)     { av_frame_free(&d->frame_audio); }
+    if (d->audio_codec_ctx) { avcodec_free_context(&d->audio_codec_ctx); }
+    if (d->audio_buf)       { av_free(d->audio_buf);           d->audio_buf = NULL; }
+
+    if (d->sws_ctx)         { sws_freeContext(d->sws_ctx);    d->sws_ctx = NULL; }
+    if (d->frame_raw)       { av_frame_free(&d->frame_raw); }
+    if (d->frame_sw)        { av_frame_free(&d->frame_sw); }
+    if (d->frame_yuv)       { av_frame_free(&d->frame_yuv); }
+    if (d->yuv_buffer)      { av_free(d->yuv_buffer);         d->yuv_buffer = NULL; }
+    if (d->hw_device_ctx)   { av_buffer_unref(&d->hw_device_ctx); }
+    if (d->codec_ctx)       { avcodec_free_context(&d->codec_ctx); }
+    if (d->fmt_ctx)         { avformat_close_input(&d->fmt_ctx); }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -385,6 +464,58 @@ static bool process_and_push_frame(DecoderCtx *d, AppState *state, AVFrame *src_
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+ * Audio decoding and queueing to SDL2 audio device
+ * ──────────────────────────────────────────────────────────────────────────── */
+static void decode_and_queue_audio(DecoderCtx *d, AppState *state, AVPacket *pkt)
+{
+    if (!d->audio_codec_ctx || !d->swr_ctx || d->audio_dev <= 0) return;
+
+    int ret = avcodec_send_packet(d->audio_codec_ctx, pkt);
+    if (ret < 0 && ret != AVERROR(EAGAIN)) return;
+
+    while (ret >= 0) {
+        ret = avcodec_receive_frame(d->audio_codec_ctx, d->frame_audio);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+        if (ret < 0) break;
+
+        bool audio_on = atomic_load(&state->audio_enabled) && !atomic_load(&state->paused);
+        if (audio_on) {
+            int max_out_samples = (int)av_rescale_rnd(
+                swr_get_delay(d->swr_ctx, d->audio_codec_ctx->sample_rate) + d->frame_audio->nb_samples,
+                48000, d->audio_codec_ctx->sample_rate, AV_ROUND_UP);
+
+            int out_bytes = max_out_samples * 2 * (int)sizeof(int16_t);
+            if (out_bytes > d->audio_buf_size) {
+                d->audio_buf = (uint8_t *)av_realloc(d->audio_buf, (size_t)(out_bytes + 2048));
+                d->audio_buf_size = out_bytes + 2048;
+            }
+
+            if (d->audio_buf) {
+                uint8_t *out_data[1] = { d->audio_buf };
+                int converted_samples = swr_convert(d->swr_ctx,
+                                                    out_data, max_out_samples,
+                                                    (const uint8_t **)d->frame_audio->data, d->frame_audio->nb_samples);
+                if (converted_samples > 0) {
+                    Uint32 pcm_len = (Uint32)(converted_samples * 2 * sizeof(int16_t));
+                    /* Keep audio buffer bounded (~350ms max) to prevent drift */
+                    Uint32 queued = SDL_GetQueuedAudioSize(d->audio_dev);
+                    Uint32 max_queue = (Uint32)(48000 * 2 * sizeof(int16_t) * 0.35);
+                    if (queued < max_queue) {
+                        SDL_QueueAudio(d->audio_dev, d->audio_buf, pcm_len);
+                    }
+                }
+            }
+        } else {
+            /* If muted or paused, clear queued audio so unmuting doesn't play stale audio */
+            if (SDL_GetQueuedAudioSize(d->audio_dev) > 0) {
+                SDL_ClearQueuedAudio(d->audio_dev);
+            }
+        }
+        av_frame_unref(d->frame_audio);
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
  * Decoder thread function.
  * ──────────────────────────────────────────────────────────────────────────── */
 static void *decoder_thread_func(void *arg)
@@ -417,11 +548,20 @@ static void *decoder_thread_func(void *arg)
 
         /* ── Handle pause ── */
         if (atomic_load(&state->paused)) {
+            if (d.audio_dev > 0) {
+                SDL_PauseAudioDevice(d.audio_dev, 1);
+                SDL_ClearQueuedAudio(d.audio_dev);
+            }
+
             pthread_mutex_lock(&state->pause_mutex);
             while (atomic_load(&state->paused) && !DECODER_SHOULD_QUIT()) {
                 pthread_cond_wait(&state->pause_cond, &state->pause_mutex);
             }
             pthread_mutex_unlock(&state->pause_mutex);
+
+            if (d.audio_dev > 0) {
+                SDL_PauseAudioDevice(d.audio_dev, 0);
+            }
 
             start_time = av_gettime_relative();
             frame_timer = 0.0;
@@ -450,11 +590,16 @@ static void *decoder_thread_func(void *arg)
                 if (DECODER_SHOULD_QUIT()) break;
 
                 /* Step 2: Seek back to the beginning of the file */
-                av_seek_frame(d.fmt_ctx, d.video_stream_idx, 0,
-                              AVSEEK_FLAG_BACKWARD);
+                av_seek_frame(d.fmt_ctx, -1, 0, AVSEEK_FLAG_BACKWARD);
 
                 /* Step 3: Flush the codec's internal buffers */
                 avcodec_flush_buffers(d.codec_ctx);
+                if (d.audio_codec_ctx) {
+                    avcodec_flush_buffers(d.audio_codec_ctx);
+                }
+                if (d.audio_dev > 0) {
+                    SDL_ClearQueuedAudio(d.audio_dev);
+                }
 
                 /* Reset frame timer for the new loop iteration */
                 start_time = av_gettime_relative();
@@ -463,6 +608,13 @@ static void *decoder_thread_func(void *arg)
             }
 
             fprintf(stderr, "[decoder] read error: %d, continuing\n", ret);
+            continue;
+        }
+
+        /* Process audio packets */
+        if (d.audio_stream_idx >= 0 && pkt->stream_index == d.audio_stream_idx) {
+            decode_and_queue_audio(&d, state, pkt);
+            av_packet_unref(pkt);
             continue;
         }
 

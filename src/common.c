@@ -202,6 +202,8 @@ void app_state_init(AppState *s)
     atomic_store(&s->decoder_ready,false);
     atomic_store(&s->video_width,  0);
     atomic_store(&s->video_height, 0);
+    atomic_store(&s->audio_enabled,false);
+    atomic_store(&s->has_audio,    false);
 
     frame_queue_init(&s->queue);
 

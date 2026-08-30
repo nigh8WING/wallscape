@@ -299,6 +299,10 @@ typedef struct {
     GtkWidget *title_widgets[MAX_WALLPAPERS];
     int        count;
     int        active_idx;
+    uint64_t   generation;
+    gint64     last_refresh_ms;
+    int        pending_thumbs;
+    bool       is_refreshing;
 } GridView;
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -337,6 +341,7 @@ struct GuiCtx {
     GtkWidget    *nav_static_btn;
     GtkWidget    *update_btn;
     GtkWidget    *status_label;
+    GtkWidget    *audio_btn;
     GtkWidget    *pause_btn;
     GtkWidget    *stop_btn;
 
@@ -388,6 +393,8 @@ static void on_remove_folder_clicked(GtkWidget *button, gpointer user_data);
 static void on_live_card_clicked(GtkButton *button, gpointer user_data);
 static void on_static_card_clicked(GtkButton *button, gpointer user_data);
 static void on_nav_tab_clicked(GtkButton *button, gpointer user_data);
+static void on_audio_btn_clicked(GtkButton *button, gpointer user_data);
+static void gui_update_audio_btn(GuiCtx *ctx);
 static void on_pause_toggled(GtkButton *button, gpointer user_data);
 static void on_stop_clicked(GtkButton *button, gpointer user_data);
 static void on_quit_clicked(GtkButton *button, gpointer user_data);
@@ -397,6 +404,7 @@ static void on_gnome_bg_changed(GSettings *settings, const gchar *key, gpointer 
 
 static int scan_folder_item_count(const char *folder, bool is_video);
 static bool is_folder_active(GuiCtx *ctx, GridView *grid, const char *folder);
+static void sync_grid_page_stack(GridView *grid);
 static void show_folders_view(GuiCtx *ctx, GridView *grid);
 static void open_folder_view(GuiCtx *ctx, GridView *grid, int folder_idx);
 
@@ -414,66 +422,144 @@ static void on_tray_popup_menu(GtkStatusIcon *icon, guint button,
                                guint activate_time, gpointer user_data);
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Async Thumbnail Loader (Detached Background Threads)
+ * Dedicated Async Thumbnail Worker Queue
  *
- * Video and image decoding is offloaded to background threads.
- * When decoding finishes, the resulting GdkPixbuf is dispatched to the GTK
- * main thread via g_idle_add() to prevent UI freezing and frame stutter.
+ * All video and image thumbnail requests are queued and processed sequentially
+ * by a single persistent background worker thread. This guarantees that RAM usage
+ * never exceeds 1 decoder instance (~15MB), preventing system freezes and OOM kills.
  * ──────────────────────────────────────────────────────────────────────────── */
+typedef struct ThumbJob {
+    char             filepath[LW_MAX_PATH];
+    int              target_w;
+    int              target_h;
+    GtkWidget       *image_widget;
+    GdkPixbuf       *thumb;
+    GridView        *grid;
+    uint64_t         generation;
+    struct ThumbJob *next;
+} ThumbJob;
+
 typedef struct {
-    char        filepath[LW_MAX_PATH];
-    int         target_w;
-    int         target_h;
-    GtkWidget  *image_widget;
-    GdkPixbuf  *thumb;
-} ThumbWorkerCtx;
+    pthread_t        thread;
+    pthread_mutex_t  mutex;
+    pthread_cond_t   cond;
+    ThumbJob        *head;
+    ThumbJob        *tail;
+    bool             started;
+    bool             quit;
+} ThumbWorkerQueue;
+
+static ThumbWorkerQueue g_thumb_queue = {
+    .mutex   = PTHREAD_MUTEX_INITIALIZER,
+    .cond    = PTHREAD_COND_INITIALIZER,
+    .head    = NULL,
+    .tail    = NULL,
+    .started = false,
+    .quit    = false
+};
 
 static gboolean thumb_apply_on_main(gpointer user_data)
 {
-    ThumbWorkerCtx *tctx = (ThumbWorkerCtx *)user_data;
-    if (tctx) {
-        if (GTK_IS_IMAGE(tctx->image_widget) && tctx->thumb) {
-            gtk_image_set_from_pixbuf(GTK_IMAGE(tctx->image_widget), tctx->thumb);
+    ThumbJob *job = (ThumbJob *)user_data;
+    if (job) {
+        if (job->image_widget) {
+            g_object_remove_weak_pointer(G_OBJECT(job->image_widget), (gpointer *)&job->image_widget);
+            if (job->grid && job->generation == job->grid->generation) {
+                if (job->thumb && GTK_IS_IMAGE(job->image_widget)) {
+                    gtk_image_set_from_pixbuf(GTK_IMAGE(job->image_widget), job->thumb);
+                }
+            }
         }
-        if (tctx->thumb) {
-            g_object_unref(tctx->thumb);
+        if (job->grid) {
+            if (job->grid->pending_thumbs > 0) {
+                job->grid->pending_thumbs--;
+                if (job->grid->pending_thumbs == 0) {
+                    job->grid->is_refreshing = false;
+                }
+            }
         }
-        free(tctx);
+        if (job->thumb) {
+            g_object_unref(job->thumb);
+        }
+        free(job);
     }
     return G_SOURCE_REMOVE;
 }
 
-static void *thumb_worker_thread(void *arg)
+static void *thumb_worker_loop(void *arg)
 {
-    ThumbWorkerCtx *tctx = (ThumbWorkerCtx *)arg;
-    if (tctx) {
-        tctx->thumb = thumbnail_generate(tctx->filepath, tctx->target_w, tctx->target_h);
-        g_idle_add(thumb_apply_on_main, tctx);
+    (void)arg;
+    while (1) {
+        pthread_mutex_lock(&g_thumb_queue.mutex);
+        while (g_thumb_queue.head == NULL && !g_thumb_queue.quit) {
+            pthread_cond_wait(&g_thumb_queue.cond, &g_thumb_queue.mutex);
+        }
+
+        if (g_thumb_queue.quit) {
+            pthread_mutex_unlock(&g_thumb_queue.mutex);
+            break;
+        }
+
+        ThumbJob *job = g_thumb_queue.head;
+        g_thumb_queue.head = job->next;
+        if (!g_thumb_queue.head) {
+            g_thumb_queue.tail = NULL;
+        }
+        pthread_mutex_unlock(&g_thumb_queue.mutex);
+
+        if (job->grid && job->generation == job->grid->generation) {
+            job->thumb = thumbnail_generate(job->filepath, job->target_w, job->target_h);
+        }
+        g_idle_add(thumb_apply_on_main, job);
     }
     return NULL;
 }
 
-static void schedule_thumb_load(GtkWidget *image_widget, const char *filepath,
+static void schedule_thumb_load(GridView *grid, GtkWidget *image_widget, const char *filepath,
                                 int target_w, int target_h)
 {
     if (!image_widget || !filepath || !filepath[0]) return;
 
-    ThumbWorkerCtx *tctx = (ThumbWorkerCtx *)calloc(1, sizeof(ThumbWorkerCtx));
-    if (!tctx) return;
-
-    snprintf(tctx->filepath, sizeof(tctx->filepath), "%s", filepath);
-    tctx->target_w     = target_w;
-    tctx->target_h     = target_h;
-    tctx->image_widget = image_widget;
-
-    pthread_t tid;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&tid, &attr, thumb_worker_thread, tctx) != 0) {
-        free(tctx);
+    pthread_mutex_lock(&g_thumb_queue.mutex);
+    if (!g_thumb_queue.started) {
+        g_thumb_queue.started = true;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        pthread_create(&g_thumb_queue.thread, &attr, thumb_worker_loop, NULL);
+        pthread_attr_destroy(&attr);
     }
-    pthread_attr_destroy(&attr);
+
+    ThumbJob *job = (ThumbJob *)calloc(1, sizeof(ThumbJob));
+    if (!job) {
+        pthread_mutex_unlock(&g_thumb_queue.mutex);
+        return;
+    }
+
+    snprintf(job->filepath, sizeof(job->filepath), "%s", filepath);
+    job->target_w     = target_w;
+    job->target_h     = target_h;
+    job->image_widget = image_widget;
+    job->grid         = grid;
+    job->generation   = grid ? grid->generation : 0;
+    job->next         = NULL;
+
+    if (grid) {
+        grid->pending_thumbs++;
+    }
+
+    g_object_add_weak_pointer(G_OBJECT(image_widget), (gpointer *)&job->image_widget);
+
+    if (g_thumb_queue.tail) {
+        g_thumb_queue.tail->next = job;
+        g_thumb_queue.tail = job;
+    } else {
+        g_thumb_queue.head = job;
+        g_thumb_queue.tail = job;
+    }
+
+    pthread_cond_signal(&g_thumb_queue.cond);
+    pthread_mutex_unlock(&g_thumb_queue.mutex);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -576,6 +662,7 @@ static void start_live_wallpaper(GuiCtx *ctx, const char *filepath)
     char *base = g_path_get_basename(filepath);
     gui_set_status(ctx, "🎬 Loading live wallpaper…");
     g_free(base);
+    gui_update_audio_btn(ctx);
 }
 
 static void stop_live_wallpaper(GuiCtx *ctx)
@@ -596,6 +683,7 @@ static void stop_live_wallpaper(GuiCtx *ctx)
         gtk_button_set_image(GTK_BUTTON(ctx->pause_btn),
                              gtk_image_new_from_icon_name("media-playback-pause-symbolic", GTK_ICON_SIZE_BUTTON));
     }
+    gui_update_audio_btn(ctx);
     gui_set_status(ctx, "Live wallpaper turned off.");
 }
 
@@ -622,6 +710,7 @@ static void apply_static_wallpaper(GuiCtx *ctx, const char *filepath)
         gtk_button_set_image(GTK_BUTTON(ctx->pause_btn),
                              gtk_image_new_from_icon_name("media-playback-pause-symbolic", GTK_ICON_SIZE_BUTTON));
     }
+    gui_update_audio_btn(ctx);
 
     if (static_wallpaper_apply(filepath)) {
         snprintf(ctx->active_static_path, sizeof(ctx->active_static_path), "%s", filepath);
@@ -767,13 +856,29 @@ static int scan_folder_item_count(const char *folder, bool is_video)
     return total;
 }
 
+static void sync_grid_page_stack(GridView *grid)
+{
+    if (!grid || !grid->page_stack) return;
+    if (grid->folder_count == 0) {
+        gtk_stack_set_visible_child_name(GTK_STACK(grid->page_stack), "empty");
+    } else if (grid->current_folder_idx >= 0 && grid->current_folder_idx < grid->folder_count) {
+        gtk_stack_set_visible_child_name(GTK_STACK(grid->page_stack), "gallery");
+    } else {
+        gtk_stack_set_visible_child_name(GTK_STACK(grid->page_stack), "folders");
+    }
+}
+
 static bool is_folder_active(GuiCtx *ctx, GridView *grid, const char *folder)
 {
-    if (!folder || !folder[0]) return false;
+    if (!ctx || !grid || !folder || !folder[0]) return false;
     size_t flen = strlen(folder);
     if (grid->is_video) {
-        if (!atomic_load(&ctx->state->playing) || ctx->state->video_path[0] == '\0') return false;
-        return (strncmp(ctx->state->video_path, folder, flen) == 0);
+        const char *active_vid = (ctx->active_video_path[0] != '\0')
+                                 ? ctx->active_video_path
+                                 : ((atomic_load(&ctx->state->playing) && ctx->state->video_path[0])
+                                    ? ctx->state->video_path : NULL);
+        if (!active_vid) return false;
+        return (strncmp(active_vid, folder, flen) == 0);
     } else {
         if (ctx->active_static_path[0] == '\0') return false;
         return (strncmp(ctx->active_static_path, folder, flen) == 0);
@@ -782,6 +887,9 @@ static bool is_folder_active(GuiCtx *ctx, GridView *grid, const char *folder)
 
 static void show_folders_view(GuiCtx *ctx, GridView *grid)
 {
+    grid->generation++;
+    grid->pending_thumbs = 0;
+    grid->is_refreshing = false;
     grid->current_folder_idx = -1;
     if (grid->back_btn) {
         gtk_widget_set_visible(grid->back_btn, FALSE);
@@ -959,6 +1067,10 @@ static void populate_live_grid(GuiCtx *ctx, const char *folder, const char *acti
 {
     if (!folder || !ctx->live_grid.gallery_flow_box) return;
 
+    ctx->live_grid.generation++;
+    ctx->live_grid.pending_thumbs = 0;
+    ctx->live_grid.is_refreshing = true;
+
     GList *children = gtk_container_get_children(GTK_CONTAINER(ctx->live_grid.gallery_flow_box));
     for (GList *l = children; l != NULL; l = l->next) {
         gtk_widget_destroy(GTK_WIDGET(l->data));
@@ -1070,7 +1182,7 @@ static void populate_live_grid(GuiCtx *ctx, const char *folder, const char *acti
         gtk_container_add(GTK_CONTAINER(overlay), img);
 
         /* Schedule async thumbnail load */
-        schedule_thumb_load(img, fpath, THUMB_WIDTH, THUMB_HEIGHT);
+        schedule_thumb_load(&ctx->live_grid, img, fpath, THUMB_WIDTH, THUMB_HEIGHT);
 
         /* Active Badge */
         GtkWidget *badge = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
@@ -1112,6 +1224,10 @@ static void populate_live_grid(GuiCtx *ctx, const char *folder, const char *acti
 static void populate_static_grid(GuiCtx *ctx, const char *folder, const char *active_file)
 {
     if (!folder || !ctx->static_grid.gallery_flow_box) return;
+
+    ctx->static_grid.generation++;
+    ctx->static_grid.pending_thumbs = 0;
+    ctx->static_grid.is_refreshing = true;
 
     GList *children = gtk_container_get_children(GTK_CONTAINER(ctx->static_grid.gallery_flow_box));
     for (GList *l = children; l != NULL; l = l->next) {
@@ -1217,7 +1333,7 @@ static void populate_static_grid(GuiCtx *ctx, const char *folder, const char *ac
         gtk_widget_set_size_request(img, THUMB_WIDTH, THUMB_HEIGHT);
         gtk_container_add(GTK_CONTAINER(overlay), img);
 
-        schedule_thumb_load(img, fpath, THUMB_WIDTH, THUMB_HEIGHT);
+        schedule_thumb_load(&ctx->static_grid, img, fpath, THUMB_WIDTH, THUMB_HEIGHT);
 
         /* Active Badge */
         GtkWidget *badge = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
@@ -1271,6 +1387,17 @@ static void on_refresh_btn_clicked(GtkButton *button, gpointer user_data)
     GuiCtx *ctx = (GuiCtx *)user_data;
     GridView *grid = (GridView *)g_object_get_data(G_OBJECT(button), "grid");
     if (!ctx || !grid) return;
+
+    /* If a scan is already running, provide status feedback and do not re-dispatch */
+    if (grid->is_refreshing) {
+        gui_set_status(ctx, "🔄 Scanning folder in progress…");
+        return;
+    }
+
+    /* Debounce rapid clicking within 350ms to prevent thread storming */
+    gint64 now_ms = g_get_monotonic_time() / 1000;
+    if (now_ms - grid->last_refresh_ms < 350) return;
+    grid->last_refresh_ms = now_ms;
 
     if (grid->current_folder_idx >= 0 && grid->current_folder_idx < grid->folder_count) {
         const char *folder = grid->folders[grid->current_folder_idx];
@@ -1414,6 +1541,52 @@ static void on_nav_tab_clicked(GtkButton *button, gpointer user_data)
 /* ─────────────────────────────────────────────────────────────────────────────
  * Control Callbacks
  * ──────────────────────────────────────────────────────────────────────────── */
+static void gui_update_audio_btn(GuiCtx *ctx)
+{
+    if (!ctx || !ctx->audio_btn) return;
+    bool playing = atomic_load(&ctx->state->playing);
+    bool has_audio = atomic_load(&ctx->state->has_audio);
+    bool audio_on = atomic_load(&ctx->state->audio_enabled);
+
+    if (playing && has_audio) {
+        gtk_widget_set_sensitive(ctx->audio_btn, TRUE);
+        if (audio_on) {
+            gtk_button_set_label(GTK_BUTTON(ctx->audio_btn), "Mute");
+            gtk_button_set_image(GTK_BUTTON(ctx->audio_btn),
+                gtk_image_new_from_icon_name("audio-volume-high-symbolic", GTK_ICON_SIZE_BUTTON));
+            gtk_widget_set_tooltip_text(ctx->audio_btn, "Mute wallpaper audio");
+        } else {
+            gtk_button_set_label(GTK_BUTTON(ctx->audio_btn), "Unmute");
+            gtk_button_set_image(GTK_BUTTON(ctx->audio_btn),
+                gtk_image_new_from_icon_name("audio-volume-muted-symbolic", GTK_ICON_SIZE_BUTTON));
+            gtk_widget_set_tooltip_text(ctx->audio_btn, "Unmute wallpaper audio");
+        }
+    } else {
+        gtk_widget_set_sensitive(ctx->audio_btn, FALSE);
+        gtk_button_set_label(GTK_BUTTON(ctx->audio_btn), "Audio");
+        gtk_button_set_image(GTK_BUTTON(ctx->audio_btn),
+            gtk_image_new_from_icon_name("audio-volume-muted-symbolic", GTK_ICON_SIZE_BUTTON));
+        if (playing && !has_audio) {
+            gtk_widget_set_tooltip_text(ctx->audio_btn, "This video does not have an audio track");
+        } else {
+            gtk_widget_set_tooltip_text(ctx->audio_btn, "Wallpaper audio control");
+        }
+    }
+}
+
+static void on_audio_btn_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!ctx) return;
+
+    bool cur = atomic_load(&ctx->state->audio_enabled);
+    bool new_state = !cur;
+    atomic_store(&ctx->state->audio_enabled, new_state);
+    config_save_audio_enabled(new_state);
+    gui_update_audio_btn(ctx);
+    gui_set_status(ctx, new_state ? "🔊 Wallpaper audio enabled." : "🔇 Wallpaper audio muted.");
+}
 static void on_pause_toggled(GtkButton *button, gpointer user_data)
 {
     GuiCtx *ctx = (GuiCtx *)user_data;
@@ -1510,6 +1683,7 @@ static gboolean on_render_tick(gpointer user_data)
                      base, w, h, fps, orient, accel);
             gui_set_status(ctx, buf);
             g_free(base);
+            gui_update_audio_btn(ctx);
 
             /* Re-start the render timer at the video's actual FPS so we don't
              * over-poll (wastes CPU) or under-poll (drops frames). */
@@ -2000,6 +2174,17 @@ static void on_indicator_stop_activate(GtkMenuItem *item, gpointer user_data)
     stop_live_wallpaper(ctx);
 }
 
+static void on_indicator_audio_toggled(GtkCheckMenuItem *item, gpointer user_data)
+{
+    GuiCtx *ctx = (GuiCtx *)user_data;
+    if (!ctx) return;
+    gboolean active = gtk_check_menu_item_get_active(item);
+    atomic_store(&ctx->state->audio_enabled, active);
+    config_save_audio_enabled(active);
+    gui_update_audio_btn(ctx);
+    gui_set_status(ctx, active ? "🔊 Wallpaper audio enabled." : "🔇 Wallpaper audio muted.");
+}
+
 static void on_indicator_autostart_toggled(GtkCheckMenuItem *item, gpointer user_data)
 {
     GuiCtx *ctx = (GuiCtx *)user_data;
@@ -2049,6 +2234,11 @@ static GtkWidget *build_tray_menu(GuiCtx *ctx)
     GtkWidget *item_stop = gtk_menu_item_new_with_label("Turn Off Live Wallpaper");
     g_signal_connect(item_stop, "activate", G_CALLBACK(on_indicator_stop_activate), ctx);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_stop);
+
+    GtkWidget *item_audio = gtk_check_menu_item_new_with_label("Wallpaper Audio");
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item_audio), atomic_load(&ctx->state->audio_enabled));
+    g_signal_connect(item_audio, "toggled", G_CALLBACK(on_indicator_audio_toggled), ctx);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item_audio);
 
     GtkWidget *item_autostart = gtk_check_menu_item_new_with_label("Start on Laptop Boot");
     gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item_autostart), autostart_is_enabled());
@@ -2361,6 +2551,10 @@ static void dismiss_splash(GuiCtx *ctx)
     if (ctx->root_stack) {
         gtk_stack_set_visible_child_name(GTK_STACK(ctx->root_stack), "app");
     }
+
+    /* Synchronize inner page stacks when transitioning to main app view */
+    sync_grid_page_stack(&ctx->live_grid);
+    sync_grid_page_stack(&ctx->static_grid);
 
     /* Start deferred wallpaper playback now that animation has finished */
     if (ctx->pending_video_path[0] != '\0') {
@@ -2823,6 +3017,14 @@ GuiCtx *gui_create(AppState *state, WallpaperCtx *wallpaper)
     gtk_label_set_xalign(GTK_LABEL(ctx->status_label), 0.0);
     gtk_box_pack_start(GTK_BOX(bottom_bar), ctx->status_label, TRUE, TRUE, 0);
 
+    ctx->audio_btn = gtk_button_new_with_label("Audio");
+    gtk_button_set_image(GTK_BUTTON(ctx->audio_btn), gtk_image_new_from_icon_name("audio-volume-muted-symbolic", GTK_ICON_SIZE_BUTTON));
+    gtk_button_set_always_show_image(GTK_BUTTON(ctx->audio_btn), TRUE);
+    gtk_widget_set_sensitive(ctx->audio_btn, FALSE);
+    g_signal_connect(ctx->audio_btn, "clicked", G_CALLBACK(on_audio_btn_clicked), ctx);
+    gtk_box_pack_start(GTK_BOX(bottom_bar), ctx->audio_btn, FALSE, FALSE, 0);
+    gui_update_audio_btn(ctx);
+
     ctx->pause_btn = gtk_button_new_with_label("Pause");
     gtk_button_set_image(GTK_BUTTON(ctx->pause_btn), gtk_image_new_from_icon_name("media-playback-pause-symbolic", GTK_ICON_SIZE_BUTTON));
     gtk_button_set_always_show_image(GTK_BUTTON(ctx->pause_btn), TRUE);
@@ -2919,6 +3121,10 @@ void gui_show(GuiCtx *ctx)
                 gtk_stack_set_visible_child_name(GTK_STACK(ctx->root_stack), "splash");
             }
         }
+        /* Restore correct inner page stacks after gtk_widget_show_all() realization pass */
+        sync_grid_page_stack(&ctx->live_grid);
+        sync_grid_page_stack(&ctx->static_grid);
+
         gtk_window_present(GTK_WINDOW(ctx->window));
     }
 }

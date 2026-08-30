@@ -83,6 +83,18 @@ cd build
 cpack -G DEB
 ```
 
+This generates `wallscape-2.7-Linux.deb` in the `build/` directory.
+
+### 3. System-wide Installation (Direct)
+
+```bash
+sudo cmake --install build
+```
+
+This installs:
+- Executable to `/usr/local/bin/live-wallpaper`
+- Desktop entry to `/usr/local/share/applications/live-wallpaper.desktop`
+- SVG application icon to `/usr/local/share/icons/hicolor/scalable/apps/live-wallpaper.svg`
 ---
 
 ## Usage
@@ -109,6 +121,20 @@ live-wallpaper --no-gui
 ## 🚀 Publishing Releases & Automatic Updates
 
 WallScape includes an automated GitHub Actions pipeline (`.github/workflows/ci.yml`) that builds both **Linux `.deb`** and **Windows 11 `.exe` / `.zip`** installers automatically upon push.
+
+### How to Publish a New Version:
+1. Update `CPACK_PACKAGE_VERSION` in `CMakeLists.txt` and `WALLSCAPE_CURRENT_VERSION` in `src/updater.h`.
+2. Update `CHANGELOG.md` with the new version and highlights.
+3. Commit and push:
+   ```bash
+   git commit -am "feat: release v2.7"
+   git push origin windows
+   ```
+4. GitHub Actions will automatically:
+   * Build WallScape on Ubuntu and Windows 11
+   * Package `wallscape-2.7-Linux.deb`, `wallscape-2.7-win64.exe`, and `wallscape-2.7-win64.zip`
+   * Extract release notes from `CHANGELOG.md`
+   * Publish the GitHub Release with Linux & Windows assets attached!
 
 ---
 

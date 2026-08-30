@@ -2,16 +2,27 @@
 
 All notable changes to WallScape are documented in this file.
 
-## 2.4
-- 🪟 **Official Windows 11 Edition**: Native Windows 11 live video & static wallpaper support.
+## 2.7
+- 🪟 **Official Windows 11 Edition & Installer**: Native Windows 11 live video & static wallpaper support with NSIS Setup Installer (`.exe`) and portable archive (`.zip`).
 - 🎬 **Windows Desktop WorkerW Hooking**: Seamless video background rendering behind desktop icons and taskbar via Progman/WorkerW.
-- ⚡ **Direct3D 11 Hardware Acceleration**: Added D3D11VA, DXVA2, CUDA, and Intel QSV decoding on Windows (CPU < 3%).
-- 🖼️ **Windows Static Wallpaper Integration**: Native `SystemParametersInfoW` wallpaper control.
-- 🚀 **Windows Registry Autostart**: 1-click Start on Boot via Windows Run Registry.
-- 📦 **Windows NSIS Installer & Portable ZIP**: Built-in Windows installer generation with desktop shortcuts and uninstaller.
+- ⚡ **Direct3D 11 Hardware Acceleration**: D3D11VA, DXVA2, CUDA, and Intel QSV decoding on Windows.
+- 🚀 **High-Performance Thumbnail Queue**: Replaced concurrent per-item threads with a dedicated sequential background worker queue, keeping RAM flat (~30MB) and completely eliminating freezes or crashes when opening large folders with 27+ HD/4K videos.
+- 💾 **Disk Thumbnail Caching**: Automatically saves generated thumbnails to disk cache, making repeated folder loads and refreshes instantaneous (&lt;1ms) with zero FFmpeg decoding overhead.
+- 🔒 **Refresh Busy-Lock & Thread Safety**: Prevents thread storming and crashes when clicking the folder Refresh button repeatedly, providing smooth UI click feedback while safely completing the active scan.
+- 🔊 **Live Wallpaper Audio Support**: Full audio decoding and playback for live video wallpapers powered by FFmpeg `libswresample` and SDL2 Audio with Mute/Unmute toggles.
+- 📁 **Instant Folder View on Startup**: Synchronized inner page stack state after realization.
+
+## 2.6
+- 🔊 Live Wallpaper Audio Support, Mute/Unmute Controls, and Audio Preference Persistence.
+
+## 2.5
+- 📁 Instant Folder View on Startup: Synchronized inner page stack state after realization.
+
+## 2.4
+- 📁 Instant Folder View on Startup refinement.
 
 ## 2.3
-- 🔄 **Reliable Automatic Restart After Update**: Resolved the single-instance D-Bus lock race condition during in-app updates, allowing WallScape to automatically and cleanly relaunch the updated version immediately after installation.
+- 🔄 Reliable Automatic Restart After Update.
 
 ## 2.2
 - 🎯 Instant Active Wallpaper Detection, Synchronized Splash Intro, and Silent Background Autostart.
