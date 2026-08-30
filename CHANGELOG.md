@@ -2,6 +2,11 @@
 
 All notable changes to WallScape are documented in this file.
 
+## 2.7
+- 🚀 **High-Performance Thumbnail Queue**: Replaced concurrent per-item threads with a dedicated sequential background worker queue, keeping RAM flat (~30MB) and completely eliminating freezes or crashes when opening large folders with 27+ HD/4K videos.
+- 💾 **Disk Thumbnail Caching**: Automatically saves generated thumbnails to `~/.cache/live-wallpaper/thumbnails/`, making repeated folder loads and refreshes instantaneous (&lt;1ms) with zero FFmpeg decoding overhead.
+- 🔒 **Refresh Busy-Lock & Thread Safety**: Prevents thread storming and crashes when clicking the folder Refresh button repeatedly, providing smooth UI click feedback while safely completing the active scan.
+
 ## 2.6
 - 🔊 **Live Wallpaper Audio Support**: Full audio decoding and playback for live video wallpapers powered by FFmpeg `libswresample` and SDL2 Audio.
 - 🎛️ **Audio Mute/Unmute Controls**: Quick-toggle button in the bottom control bar and system tray menu, with automatic sensitivity handling for videos with or without audio tracks.

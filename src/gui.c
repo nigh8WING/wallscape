@@ -285,6 +285,10 @@ typedef struct {
     GtkWidget *title_widgets[MAX_WALLPAPERS];
     int        count;
     int        active_idx;
+    uint64_t   generation;
+    gint64     last_refresh_ms;
+    int        pending_thumbs;
+    bool       is_refreshing;
 } GridView;
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -404,66 +408,144 @@ static void on_tray_popup_menu(GtkStatusIcon *icon, guint button,
                                guint activate_time, gpointer user_data);
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Async Thumbnail Loader (Detached Background Threads)
+ * Dedicated Async Thumbnail Worker Queue
  *
- * Video and image decoding is offloaded to background threads.
- * When decoding finishes, the resulting GdkPixbuf is dispatched to the GTK
- * main thread via g_idle_add() to prevent UI freezing and frame stutter.
+ * All video and image thumbnail requests are queued and processed sequentially
+ * by a single persistent background worker thread. This guarantees that RAM usage
+ * never exceeds 1 decoder instance (~15MB), preventing system freezes and OOM kills.
  * ──────────────────────────────────────────────────────────────────────────── */
+typedef struct ThumbJob {
+    char             filepath[LW_MAX_PATH];
+    int              target_w;
+    int              target_h;
+    GtkWidget       *image_widget;
+    GdkPixbuf       *thumb;
+    GridView        *grid;
+    uint64_t         generation;
+    struct ThumbJob *next;
+} ThumbJob;
+
 typedef struct {
-    char        filepath[LW_MAX_PATH];
-    int         target_w;
-    int         target_h;
-    GtkWidget  *image_widget;
-    GdkPixbuf  *thumb;
-} ThumbWorkerCtx;
+    pthread_t        thread;
+    pthread_mutex_t  mutex;
+    pthread_cond_t   cond;
+    ThumbJob        *head;
+    ThumbJob        *tail;
+    bool             started;
+    bool             quit;
+} ThumbWorkerQueue;
+
+static ThumbWorkerQueue g_thumb_queue = {
+    .mutex   = PTHREAD_MUTEX_INITIALIZER,
+    .cond    = PTHREAD_COND_INITIALIZER,
+    .head    = NULL,
+    .tail    = NULL,
+    .started = false,
+    .quit    = false
+};
 
 static gboolean thumb_apply_on_main(gpointer user_data)
 {
-    ThumbWorkerCtx *tctx = (ThumbWorkerCtx *)user_data;
-    if (tctx) {
-        if (GTK_IS_IMAGE(tctx->image_widget) && tctx->thumb) {
-            gtk_image_set_from_pixbuf(GTK_IMAGE(tctx->image_widget), tctx->thumb);
+    ThumbJob *job = (ThumbJob *)user_data;
+    if (job) {
+        if (job->image_widget) {
+            g_object_remove_weak_pointer(G_OBJECT(job->image_widget), (gpointer *)&job->image_widget);
+            if (job->grid && job->generation == job->grid->generation) {
+                if (job->thumb && GTK_IS_IMAGE(job->image_widget)) {
+                    gtk_image_set_from_pixbuf(GTK_IMAGE(job->image_widget), job->thumb);
+                }
+            }
         }
-        if (tctx->thumb) {
-            g_object_unref(tctx->thumb);
+        if (job->grid) {
+            if (job->grid->pending_thumbs > 0) {
+                job->grid->pending_thumbs--;
+                if (job->grid->pending_thumbs == 0) {
+                    job->grid->is_refreshing = false;
+                }
+            }
         }
-        free(tctx);
+        if (job->thumb) {
+            g_object_unref(job->thumb);
+        }
+        free(job);
     }
     return G_SOURCE_REMOVE;
 }
 
-static void *thumb_worker_thread(void *arg)
+static void *thumb_worker_loop(void *arg)
 {
-    ThumbWorkerCtx *tctx = (ThumbWorkerCtx *)arg;
-    if (tctx) {
-        tctx->thumb = thumbnail_generate(tctx->filepath, tctx->target_w, tctx->target_h);
-        g_idle_add(thumb_apply_on_main, tctx);
+    (void)arg;
+    while (1) {
+        pthread_mutex_lock(&g_thumb_queue.mutex);
+        while (g_thumb_queue.head == NULL && !g_thumb_queue.quit) {
+            pthread_cond_wait(&g_thumb_queue.cond, &g_thumb_queue.mutex);
+        }
+
+        if (g_thumb_queue.quit) {
+            pthread_mutex_unlock(&g_thumb_queue.mutex);
+            break;
+        }
+
+        ThumbJob *job = g_thumb_queue.head;
+        g_thumb_queue.head = job->next;
+        if (!g_thumb_queue.head) {
+            g_thumb_queue.tail = NULL;
+        }
+        pthread_mutex_unlock(&g_thumb_queue.mutex);
+
+        if (job->grid && job->generation == job->grid->generation) {
+            job->thumb = thumbnail_generate(job->filepath, job->target_w, job->target_h);
+        }
+        g_idle_add(thumb_apply_on_main, job);
     }
     return NULL;
 }
 
-static void schedule_thumb_load(GtkWidget *image_widget, const char *filepath,
+static void schedule_thumb_load(GridView *grid, GtkWidget *image_widget, const char *filepath,
                                 int target_w, int target_h)
 {
     if (!image_widget || !filepath || !filepath[0]) return;
 
-    ThumbWorkerCtx *tctx = (ThumbWorkerCtx *)calloc(1, sizeof(ThumbWorkerCtx));
-    if (!tctx) return;
-
-    snprintf(tctx->filepath, sizeof(tctx->filepath), "%s", filepath);
-    tctx->target_w     = target_w;
-    tctx->target_h     = target_h;
-    tctx->image_widget = image_widget;
-
-    pthread_t tid;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&tid, &attr, thumb_worker_thread, tctx) != 0) {
-        free(tctx);
+    pthread_mutex_lock(&g_thumb_queue.mutex);
+    if (!g_thumb_queue.started) {
+        g_thumb_queue.started = true;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        pthread_create(&g_thumb_queue.thread, &attr, thumb_worker_loop, NULL);
+        pthread_attr_destroy(&attr);
     }
-    pthread_attr_destroy(&attr);
+
+    ThumbJob *job = (ThumbJob *)calloc(1, sizeof(ThumbJob));
+    if (!job) {
+        pthread_mutex_unlock(&g_thumb_queue.mutex);
+        return;
+    }
+
+    snprintf(job->filepath, sizeof(job->filepath), "%s", filepath);
+    job->target_w     = target_w;
+    job->target_h     = target_h;
+    job->image_widget = image_widget;
+    job->grid         = grid;
+    job->generation   = grid ? grid->generation : 0;
+    job->next         = NULL;
+
+    if (grid) {
+        grid->pending_thumbs++;
+    }
+
+    g_object_add_weak_pointer(G_OBJECT(image_widget), (gpointer *)&job->image_widget);
+
+    if (g_thumb_queue.tail) {
+        g_thumb_queue.tail->next = job;
+        g_thumb_queue.tail = job;
+    } else {
+        g_thumb_queue.head = job;
+        g_thumb_queue.tail = job;
+    }
+
+    pthread_cond_signal(&g_thumb_queue.cond);
+    pthread_mutex_unlock(&g_thumb_queue.mutex);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -791,6 +873,9 @@ static bool is_folder_active(GuiCtx *ctx, GridView *grid, const char *folder)
 
 static void show_folders_view(GuiCtx *ctx, GridView *grid)
 {
+    grid->generation++;
+    grid->pending_thumbs = 0;
+    grid->is_refreshing = false;
     grid->current_folder_idx = -1;
     if (grid->back_btn) {
         gtk_widget_set_visible(grid->back_btn, FALSE);
@@ -968,6 +1053,10 @@ static void populate_live_grid(GuiCtx *ctx, const char *folder, const char *acti
 {
     if (!folder || !ctx->live_grid.gallery_flow_box) return;
 
+    ctx->live_grid.generation++;
+    ctx->live_grid.pending_thumbs = 0;
+    ctx->live_grid.is_refreshing = true;
+
     GList *children = gtk_container_get_children(GTK_CONTAINER(ctx->live_grid.gallery_flow_box));
     for (GList *l = children; l != NULL; l = l->next) {
         gtk_widget_destroy(GTK_WIDGET(l->data));
@@ -1079,7 +1168,7 @@ static void populate_live_grid(GuiCtx *ctx, const char *folder, const char *acti
         gtk_container_add(GTK_CONTAINER(overlay), img);
 
         /* Schedule async thumbnail load */
-        schedule_thumb_load(img, fpath, THUMB_WIDTH, THUMB_HEIGHT);
+        schedule_thumb_load(&ctx->live_grid, img, fpath, THUMB_WIDTH, THUMB_HEIGHT);
 
         /* Active Badge */
         GtkWidget *badge = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
@@ -1121,6 +1210,10 @@ static void populate_live_grid(GuiCtx *ctx, const char *folder, const char *acti
 static void populate_static_grid(GuiCtx *ctx, const char *folder, const char *active_file)
 {
     if (!folder || !ctx->static_grid.gallery_flow_box) return;
+
+    ctx->static_grid.generation++;
+    ctx->static_grid.pending_thumbs = 0;
+    ctx->static_grid.is_refreshing = true;
 
     GList *children = gtk_container_get_children(GTK_CONTAINER(ctx->static_grid.gallery_flow_box));
     for (GList *l = children; l != NULL; l = l->next) {
@@ -1226,7 +1319,7 @@ static void populate_static_grid(GuiCtx *ctx, const char *folder, const char *ac
         gtk_widget_set_size_request(img, THUMB_WIDTH, THUMB_HEIGHT);
         gtk_container_add(GTK_CONTAINER(overlay), img);
 
-        schedule_thumb_load(img, fpath, THUMB_WIDTH, THUMB_HEIGHT);
+        schedule_thumb_load(&ctx->static_grid, img, fpath, THUMB_WIDTH, THUMB_HEIGHT);
 
         /* Active Badge */
         GtkWidget *badge = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
@@ -1280,6 +1373,17 @@ static void on_refresh_btn_clicked(GtkButton *button, gpointer user_data)
     GuiCtx *ctx = (GuiCtx *)user_data;
     GridView *grid = (GridView *)g_object_get_data(G_OBJECT(button), "grid");
     if (!ctx || !grid) return;
+
+    /* If a scan is already running, provide status feedback and do not re-dispatch */
+    if (grid->is_refreshing) {
+        gui_set_status(ctx, "🔄 Scanning folder in progress…");
+        return;
+    }
+
+    /* Debounce rapid clicking within 350ms to prevent thread storming */
+    gint64 now_ms = g_get_monotonic_time() / 1000;
+    if (now_ms - grid->last_refresh_ms < 350) return;
+    grid->last_refresh_ms = now_ms;
 
     if (grid->current_folder_idx >= 0 && grid->current_folder_idx < grid->folder_count) {
         const char *folder = grid->folders[grid->current_folder_idx];

@@ -12,6 +12,8 @@
 #include <string.h>
 #include <strings.h>
 
+#include <sys/stat.h>
+
 static gboolean is_image_ext(const char *path)
 {
     if (!path) return FALSE;
@@ -26,17 +28,55 @@ static gboolean is_image_ext(const char *path)
     return FALSE;
 }
 
+static char *get_thumbnail_cache_path(const char *filepath, int target_w, int target_h)
+{
+    struct stat st;
+    if (stat(filepath, &st) != 0) {
+        return NULL;
+    }
+
+    const char *user_cache = g_get_user_cache_dir();
+    char cache_dir[512];
+    snprintf(cache_dir, sizeof(cache_dir), "%s/live-wallpaper/thumbnails", user_cache);
+    g_mkdir_with_parents(cache_dir, 0755);
+
+    char key[1024];
+    snprintf(key, sizeof(key), "%s:%ld:%ld:%dx%d", filepath, (long)st.st_mtime, (long)st.st_size, target_w, target_h);
+    char *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, key, -1);
+    if (!hash) return NULL;
+
+    char *cache_path = g_strdup_printf("%s/%s.jpg", cache_dir, hash);
+    g_free(hash);
+    return cache_path;
+}
+
 GdkPixbuf *thumbnail_generate(const char *filepath, int target_w, int target_h)
 {
     if (!filepath || !filepath[0] || target_w <= 0 || target_h <= 0) {
         return NULL;
     }
 
-    /* Fast path for static image files */
+    /* Fast path 1: Check disk cache first */
+    char *cache_path = get_thumbnail_cache_path(filepath, target_w, target_h);
+    if (cache_path && g_file_test(cache_path, G_FILE_TEST_EXISTS)) {
+        GError *err = NULL;
+        GdkPixbuf *cached_pixbuf = gdk_pixbuf_new_from_file(cache_path, &err);
+        if (cached_pixbuf) {
+            g_free(cache_path);
+            return cached_pixbuf;
+        }
+        if (err) g_error_free(err);
+    }
+
+    /* Fast path 2: Static image files via GdkPixbuf */
     if (is_image_ext(filepath)) {
         GError *err = NULL;
         GdkPixbuf *img_pixbuf = gdk_pixbuf_new_from_file_at_scale(filepath, target_w, target_h, TRUE, &err);
         if (img_pixbuf) {
+            if (cache_path) {
+                gdk_pixbuf_save(img_pixbuf, cache_path, "jpeg", NULL, "quality", "85", NULL);
+                g_free(cache_path);
+            }
             return img_pixbuf;
         }
         if (err) g_error_free(err);
@@ -53,6 +93,7 @@ GdkPixbuf *thumbnail_generate(const char *filepath, int target_w, int target_h)
     int                v_idx     = -1;
 
     if (avformat_open_input(&fmt_ctx, filepath, NULL, NULL) < 0) {
+        if (cache_path) g_free(cache_path);
         return NULL;
     }
 
@@ -194,6 +235,11 @@ cleanup:
     if (pkt) av_packet_free(&pkt);
     if (codec_ctx) avcodec_free_context(&codec_ctx);
     if (fmt_ctx) avformat_close_input(&fmt_ctx);
+
+    if (pixbuf && cache_path) {
+        gdk_pixbuf_save(pixbuf, cache_path, "jpeg", NULL, "quality", "85", NULL);
+    }
+    if (cache_path) g_free(cache_path);
 
     return pixbuf;
 }
