@@ -383,6 +383,7 @@ static void on_gnome_bg_changed(GSettings *settings, const gchar *key, gpointer 
 
 static int scan_folder_item_count(const char *folder, bool is_video);
 static bool is_folder_active(GuiCtx *ctx, GridView *grid, const char *folder);
+static void sync_grid_page_stack(GridView *grid);
 static void show_folders_view(GuiCtx *ctx, GridView *grid);
 static void open_folder_view(GuiCtx *ctx, GridView *grid, int folder_idx);
 
@@ -753,13 +754,29 @@ static int scan_folder_item_count(const char *folder, bool is_video)
     return total;
 }
 
+static void sync_grid_page_stack(GridView *grid)
+{
+    if (!grid || !grid->page_stack) return;
+    if (grid->folder_count == 0) {
+        gtk_stack_set_visible_child_name(GTK_STACK(grid->page_stack), "empty");
+    } else if (grid->current_folder_idx >= 0 && grid->current_folder_idx < grid->folder_count) {
+        gtk_stack_set_visible_child_name(GTK_STACK(grid->page_stack), "gallery");
+    } else {
+        gtk_stack_set_visible_child_name(GTK_STACK(grid->page_stack), "folders");
+    }
+}
+
 static bool is_folder_active(GuiCtx *ctx, GridView *grid, const char *folder)
 {
-    if (!folder || !folder[0]) return false;
+    if (!ctx || !grid || !folder || !folder[0]) return false;
     size_t flen = strlen(folder);
     if (grid->is_video) {
-        if (!atomic_load(&ctx->state->playing) || ctx->state->video_path[0] == '\0') return false;
-        return (strncmp(ctx->state->video_path, folder, flen) == 0);
+        const char *active_vid = (ctx->active_video_path[0] != '\0')
+                                 ? ctx->active_video_path
+                                 : ((atomic_load(&ctx->state->playing) && ctx->state->video_path[0])
+                                    ? ctx->state->video_path : NULL);
+        if (!active_vid) return false;
+        return (strncmp(active_vid, folder, flen) == 0);
     } else {
         if (ctx->active_static_path[0] == '\0') return false;
         return (strncmp(ctx->active_static_path, folder, flen) == 0);
@@ -2346,6 +2363,10 @@ static void dismiss_splash(GuiCtx *ctx)
         gtk_stack_set_visible_child_name(GTK_STACK(ctx->root_stack), "app");
     }
 
+    /* Synchronize inner page stacks when transitioning to main app view */
+    sync_grid_page_stack(&ctx->live_grid);
+    sync_grid_page_stack(&ctx->static_grid);
+
     /* Start deferred wallpaper playback now that animation has finished */
     if (ctx->pending_video_path[0] != '\0') {
         if (!atomic_load(&ctx->state->playing)) {
@@ -2901,6 +2922,10 @@ void gui_show(GuiCtx *ctx)
                 gtk_stack_set_visible_child_name(GTK_STACK(ctx->root_stack), "splash");
             }
         }
+        /* Restore correct inner page stacks after gtk_widget_show_all() realization pass */
+        sync_grid_page_stack(&ctx->live_grid);
+        sync_grid_page_stack(&ctx->static_grid);
+
         gtk_window_present(GTK_WINDOW(ctx->window));
     }
 }

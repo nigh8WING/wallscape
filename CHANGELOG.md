@@ -2,8 +2,11 @@
 
 All notable changes to WallScape are documented in this file.
 
+## 2.4
+- 📁 **Instant Folder View on Startup**: Fixed the empty folder placeholder issue on startup/boot by synchronizing the inner page stack state after realization, ensuring your wallpapers are immediately visible when opening the app.
+
 ## 2.3
-- 🔄 **Reliable Automatic Restart After Update**: Resolved the single-instance D-Bus lock race condition during in-app updates, allowing WallScape to automatically and cleanly relaunch the updated version immediately after installation.
+- 🔄 Reliable Automatic Restart After Update.
 
 ## 2.2
 - 🎯 Instant Active Wallpaper Detection, Synchronized Splash Intro, and Silent Background Autostart.
