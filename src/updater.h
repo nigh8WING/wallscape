@@ -10,7 +10,7 @@
 #include <stdbool.h>
 #include <gtk/gtk.h>
 
-#define WALLSCAPE_CURRENT_VERSION "2.4"
+#define WALLSCAPE_CURRENT_VERSION "2.5"
 #define WALLSCAPE_GITHUB_REPO     "nigh8WING/wallscape"
 
 typedef struct {
