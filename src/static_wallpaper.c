@@ -31,6 +31,52 @@ bool static_wallpaper_is_supported(const char *filename)
     return false;
 }
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+bool static_wallpaper_apply(const char *image_path)
+{
+    if (!image_path || !image_path[0]) return false;
+
+    wchar_t wpath[MAX_PATH];
+    int res = MultiByteToWideChar(CP_UTF8, 0, image_path, -1, wpath, MAX_PATH);
+    if (res == 0) {
+        fprintf(stderr, "[static_wallpaper] Failed to convert path to wide string: %s\n", image_path);
+        return false;
+    }
+
+    BOOL ok = SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, (void *)wpath, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+    if (!ok) {
+        fprintf(stderr, "[static_wallpaper] SystemParametersInfoW failed (error %lu)\n", GetLastError());
+        return false;
+    }
+
+    fprintf(stderr, "[static_wallpaper] Applied Windows static wallpaper: %s\n", image_path);
+    return true;
+}
+
+bool static_wallpaper_clear(void)
+{
+    BOOL ok = SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, (void *)L"", SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+    fprintf(stderr, "[static_wallpaper] Cleared static wallpaper on Windows.\n");
+    return (ok != FALSE);
+}
+
+bool static_wallpaper_get_current(char *out_path, int max_len)
+{
+    if (!out_path || max_len <= 0) return false;
+
+    wchar_t wpath[MAX_PATH] = {0};
+    BOOL ok = SystemParametersInfoW(SPI_GETDESKWALLPAPER, MAX_PATH, (void *)wpath, 0);
+    if (!ok || wpath[0] == L'\0') {
+        return false;
+    }
+
+    int res = WideCharToMultiByte(CP_UTF8, 0, wpath, -1, out_path, max_len, NULL, NULL);
+    return (res > 0);
+}
+#else
 bool static_wallpaper_apply(const char *image_path)
 {
     if (!image_path || !image_path[0]) return false;
@@ -130,3 +176,4 @@ bool static_wallpaper_get_current(char *out_path, int max_len)
     g_object_unref(settings);
     return success;
 }
+#endif

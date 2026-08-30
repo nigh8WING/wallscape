@@ -13,9 +13,21 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <shlobj.h>
+#include <direct.h>
+#include <io.h>
+#define access _access
+#define F_OK 0
+#define mkdir(dir, mode) _mkdir(dir)
+#else
 #include <unistd.h>
 #include <sys/stat.h>
-#include <errno.h>
+#endif
 
 #define CONFIG_DIR_REL   "/.config/live-wallpaper"
 #define CONFIG_FILE_REL  "/.config/live-wallpaper/config.txt"
@@ -24,18 +36,42 @@
 
 static bool get_config_path(char *buf, int max_len)
 {
+#ifdef _WIN32
+    char appdata[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata))) {
+        int n = snprintf(buf, (size_t)max_len, "%s\\WallScape\\config.txt", appdata);
+        return (n > 0 && n < max_len);
+    }
+    const char *env_appdata = getenv("APPDATA");
+    if (!env_appdata || !env_appdata[0]) return false;
+    int n = snprintf(buf, (size_t)max_len, "%s\\WallScape\\config.txt", env_appdata);
+    return (n > 0 && n < max_len);
+#else
     const char *home = getenv("HOME");
     if (!home || !home[0]) return false;
     int n = snprintf(buf, (size_t)max_len, "%s%s", home, CONFIG_FILE_REL);
     return (n > 0 && n < max_len);
+#endif
 }
 
 static bool get_config_dir(char *buf, int max_len)
 {
+#ifdef _WIN32
+    char appdata[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata))) {
+        int n = snprintf(buf, (size_t)max_len, "%s\\WallScape", appdata);
+        return (n > 0 && n < max_len);
+    }
+    const char *env_appdata = getenv("APPDATA");
+    if (!env_appdata || !env_appdata[0]) return false;
+    int n = snprintf(buf, (size_t)max_len, "%s\\WallScape", env_appdata);
+    return (n > 0 && n < max_len);
+#else
     const char *home = getenv("HOME");
     if (!home || !home[0]) return false;
     int n = snprintf(buf, (size_t)max_len, "%s%s", home, CONFIG_DIR_REL);
     return (n > 0 && n < max_len);
+#endif
 }
 
 static bool ensure_config_dir(void)
@@ -252,6 +288,55 @@ bool config_save_static_path(const char *path)
  * Autostart Management (~/.config/autostart/live-wallpaper.desktop)
  * ──────────────────────────────────────────────────────────────────────────── */
 
+#ifdef _WIN32
+#define RUN_REG_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+#define RUN_VAL_NAME "WallScape"
+
+bool autostart_is_enabled(void)
+{
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, RUN_REG_KEY, 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+
+    char value[MAX_PATH];
+    DWORD val_sz = sizeof(value);
+    DWORD type = 0;
+    LONG res = RegQueryValueExA(hKey, RUN_VAL_NAME, NULL, &type, (LPBYTE)value, &val_sz);
+    RegCloseKey(hKey);
+
+    return (res == ERROR_SUCCESS);
+}
+
+bool autostart_set_enabled(bool enabled)
+{
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, RUN_REG_KEY, 0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS) {
+        return false;
+    }
+
+    if (!enabled) {
+        RegDeleteValueA(hKey, RUN_VAL_NAME);
+        RegCloseKey(hKey);
+        return true;
+    }
+
+    char exe_path[MAX_PATH];
+    DWORD len = GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
+    if (len == 0 || len >= sizeof(exe_path) - 16) {
+        RegCloseKey(hKey);
+        return false;
+    }
+
+    char cmd[MAX_PATH + 32];
+    snprintf(cmd, sizeof(cmd), "\"%s\" --no-gui", exe_path);
+
+    LONG res = RegSetValueExA(hKey, RUN_VAL_NAME, 0, REG_SZ, (const BYTE *)cmd, (DWORD)(strlen(cmd) + 1));
+    RegCloseKey(hKey);
+
+    return (res == ERROR_SUCCESS);
+}
+#else
 static bool get_autostart_desktop_path(char *out, size_t out_sz)
 {
     const char *home = getenv("HOME");
@@ -314,3 +399,4 @@ bool autostart_set_enabled(bool enabled)
     fclose(fp);
     return true;
 }
+#endif

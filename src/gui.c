@@ -26,11 +26,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
-#include <unistd.h>
 #include <ctype.h>
 #include <math.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <io.h>
+#include <direct.h>
+#define access _access
+#define F_OK 0
+#define R_OK 4
+#define getcwd _getcwd
+#define strcasecmp _stricmp
+#define strncasecmp _strnicmp
+#else
+#include <strings.h>
+#include <unistd.h>
 #include <dlfcn.h>
+#endif
 
 #define MAX_WALLPAPERS 256
 
@@ -2112,6 +2126,7 @@ static void setup_tray_indicator(GuiCtx *ctx, GdkPixbuf *app_icon)
 {
     ensure_app_icons_installed();
 
+#ifndef _WIN32
     /* Dynamic load of libayatana-appindicator / libappindicator for modern GNOME Shell & Zorin OS taskbar */
     const char *libs[] = {
         "libayatana-appindicator3.so.1",
@@ -2172,6 +2187,7 @@ static void setup_tray_indicator(GuiCtx *ctx, GdkPixbuf *app_icon)
         }
         dlclose(lib);
     }
+#endif
 
     /* Fallback to legacy GtkStatusIcon if AppIndicator is unavailable */
     ctx->tray_icon = gtk_status_icon_new();
@@ -2874,10 +2890,12 @@ void gui_destroy(GuiCtx *ctx)
         g_object_unref(ctx->app_indicator);
         ctx->app_indicator = NULL;
     }
+#ifndef _WIN32
     if (ctx->app_indicator_lib) {
         dlclose(ctx->app_indicator_lib);
         ctx->app_indicator_lib = NULL;
     }
+#endif
     if (ctx->tray_icon) {
         gtk_status_icon_set_visible(ctx->tray_icon, FALSE);
         g_object_unref(ctx->tray_icon);

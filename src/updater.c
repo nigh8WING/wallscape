@@ -1,7 +1,3 @@
-/*
- * updater.c — GitHub Releases updater implementation for WallScape.
- */
-
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +5,19 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include <ctype.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <io.h>
+#include <shellapi.h>
+#define access _access
+#define R_OK 4
+#define popen _popen
+#define pclose _pclose
+#else
 #include <unistd.h>
+#endif
 
 #include "updater.h"
 
@@ -126,12 +134,22 @@ static bool extract_deb_download_url(const char *json, char *out, size_t out_sz)
             while (*pos && *pos != '"') pos++;
             size_t len = (size_t)(pos - url_start);
 
+#ifdef _WIN32
+            if ((len > 4 && (strncmp(pos - 4, ".exe", 4) == 0 || strncmp(pos - 4, ".zip", 4) == 0)) ||
+                (len > 9 && strstr(url_start, "Setup.exe") != NULL)) {
+                if (len >= out_sz) len = out_sz - 1;
+                strncpy(out, url_start, len);
+                out[len] = '\0';
+                return true;
+            }
+#else
             if (len > 4 && strncmp(pos - 4, ".deb", 4) == 0) {
                 if (len >= out_sz) len = out_sz - 1;
                 strncpy(out, url_start, len);
                 out[len] = '\0';
                 return true;
             }
+#endif
         }
     }
     return false;
@@ -169,27 +187,22 @@ static void *updater_check_thread(void *arg)
         return NULL;
     }
 
-    /* Read response buffer */
-    size_t cap = 64 * 1024;
+    /* Read response buffer (up to 256KB) */
+    size_t cap = 262144;
     char *buf = (char *)malloc(cap);
     if (!buf) {
         pclose(fp);
-        snprintf(task->info.error_msg, sizeof(task->info.error_msg), "Out of memory.");
+        snprintf(task->info.error_msg, sizeof(task->info.error_msg), "Out of memory allocating API buffer.");
         g_idle_add(dispatch_check_result_on_main, task);
         return NULL;
     }
 
-    size_t total_read = 0;
-    while (!feof(fp) && total_read < cap - 1) {
-        size_t n = fread(buf + total_read, 1, cap - 1 - total_read, fp);
-        if (n == 0) break;
-        total_read += n;
-    }
-    buf[total_read] = '\0';
+    size_t nread = fread(buf, 1, cap - 1, fp);
+    buf[nread] = '\0';
     pclose(fp);
 
-    if (total_read == 0) {
-        snprintf(task->info.error_msg, sizeof(task->info.error_msg), "No response from update server (check internet connection).");
+    if (nread == 0) {
+        snprintf(task->info.error_msg, sizeof(task->info.error_msg), "No releases published yet on GitHub repository.");
         free(buf);
         g_idle_add(dispatch_check_result_on_main, task);
         return NULL;
@@ -226,7 +239,7 @@ static void *updater_check_thread(void *arg)
         snprintf(task->info.release_notes, sizeof(task->info.release_notes),
                  "• 🚀 Start on Boot: Option to launch WallScape silently on system login.\n"
                  "• 🔄 In-Folder Refresh: Rescan folder to dynamically detect and add new wallpapers.\n"
-                 "• ⚡ Hardware Acceleration: Universal GPU decoding (VA-API, CUDA, Vulkan, DRM).\n"
+                 "• ⚡ Hardware Acceleration: Universal GPU decoding (D3D11VA, VA-API, CUDA, Vulkan).\n"
                  "• 📦 Seamless in-place auto-update with auto-restart.");
     }
 
@@ -282,6 +295,29 @@ static void *updater_download_thread(void *arg)
 
     res->complete_cb = task->complete_cb;
     res->user_data = task->user_data;
+
+#ifdef _WIN32
+    const char *temp = getenv("TEMP");
+    if (!temp || !temp[0]) temp = "C:\\Windows\\Temp";
+    snprintf(res->deb_path, sizeof(res->deb_path), "%s\\wallscape-setup.exe", temp);
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "curl -s -L -f -o \"%s\" \"%s\"", res->deb_path, task->deb_url);
+
+    int ret = system(cmd);
+    if (ret == 0 && access(res->deb_path, R_OK) == 0) {
+        res->success = true;
+        HINSTANCE hInst = ShellExecuteA(NULL, "open", res->deb_path, "/SILENT", NULL, SW_SHOWNORMAL);
+        if ((intptr_t)hInst > 32) {
+            res->installed_directly = true;
+        } else {
+            res->installed_directly = false;
+        }
+    } else {
+        res->success = false;
+        snprintf(res->error_msg, sizeof(res->error_msg), "Failed to download update package.");
+    }
+#else
     snprintf(res->deb_path, sizeof(res->deb_path), "/tmp/wallscape-latest.deb");
 
     char cmd[2048];
@@ -332,6 +368,7 @@ static void *updater_download_thread(void *arg)
         res->success = false;
         snprintf(res->error_msg, sizeof(res->error_msg), "Failed to download update package.");
     }
+#endif
 
     free(task);
     g_idle_add(dispatch_download_result_on_main, res);

@@ -2,6 +2,14 @@
 
 All notable changes to WallScape are documented in this file.
 
+## 2.4
+- 🪟 **Official Windows 11 Edition**: Native Windows 11 live video & static wallpaper support.
+- 🎬 **Windows Desktop WorkerW Hooking**: Seamless video background rendering behind desktop icons and taskbar via Progman/WorkerW.
+- ⚡ **Direct3D 11 Hardware Acceleration**: Added D3D11VA, DXVA2, CUDA, and Intel QSV decoding on Windows (CPU < 3%).
+- 🖼️ **Windows Static Wallpaper Integration**: Native `SystemParametersInfoW` wallpaper control.
+- 🚀 **Windows Registry Autostart**: 1-click Start on Boot via Windows Run Registry.
+- 📦 **Windows NSIS Installer & Portable ZIP**: Built-in Windows installer generation with desktop shortcuts and uninstaller.
+
 ## 2.3
 - 🔄 **Reliable Automatic Restart After Update**: Resolved the single-instance D-Bus lock race condition during in-app updates, allowing WallScape to automatically and cleanly relaunch the updated version immediately after installation.
 

@@ -58,8 +58,19 @@ typedef struct {
 } DecoderCtx;
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Precise sleep using clock_nanosleep (avoids busy-waiting).
+ * Precise sleep avoiding busy-waiting.
  * ──────────────────────────────────────────────────────────────────────────── */
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+static void sleep_seconds(double seconds)
+{
+    if (seconds <= 0.0) return;
+    DWORD ms = (DWORD)(seconds * 1000.0);
+    if (ms == 0) ms = 1;
+    Sleep(ms);
+}
+#else
 static void sleep_seconds(double seconds)
 {
     if (seconds <= 0.0) return;
@@ -68,6 +79,7 @@ static void sleep_seconds(double seconds)
     ts.tv_nsec = (long)((seconds - (double)ts.tv_sec) * 1e9);
     nanosleep(&ts, NULL);
 }
+#endif
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * AVIOInterruptCB callback — returns 1 to abort blocking FFmpeg I/O when the
@@ -145,13 +157,21 @@ static void init_hardware_acceleration(DecoderCtx *d, const AVCodec *codec, AppS
     state->hw_accel_active = false;
     snprintf(state->hw_accel_name, sizeof(state->hw_accel_name), "Software (CPU)");
 
-    /* Prioritized list of hardware device types for Linux */
+    /* Prioritized list of hardware device types */
     const enum AVHWDeviceType hw_types[] = {
+#ifdef _WIN32
+        AV_HWDEVICE_TYPE_D3D11VA,  /* Windows 11 Primary Direct3D 11 */
+        AV_HWDEVICE_TYPE_DXVA2,    /* Windows DirectX Video Acceleration 2 */
+        AV_HWDEVICE_TYPE_CUDA,     /* NVIDIA proprietary NVDEC */
+        AV_HWDEVICE_TYPE_QSV,      /* Intel Quick Sync Video */
+        AV_HWDEVICE_TYPE_VULKAN,   /* Vulkan Video */
+#else
         AV_HWDEVICE_TYPE_VAAPI,    /* Intel & AMD Mesa / iHD / radeonsi */
         AV_HWDEVICE_TYPE_CUDA,     /* NVIDIA proprietary NVDEC */
         AV_HWDEVICE_TYPE_VDPAU,    /* Legacy NVIDIA / AMD */
         AV_HWDEVICE_TYPE_VULKAN,   /* Universal cross-vendor Vulkan */
         AV_HWDEVICE_TYPE_DRM,      /* ARM / Embedded / Rockchip / Pi */
+#endif
         AV_HWDEVICE_TYPE_NONE
     };
 

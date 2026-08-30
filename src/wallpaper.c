@@ -18,9 +18,14 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
+#endif
 
 struct WallpaperCtx {
     SDL_Window   *window;
@@ -65,6 +70,44 @@ static void compute_fit_rect(int video_w, int video_h,
     dst->y = (screen_h - dst->h) / 2;
 }
 
+#ifdef _WIN32
+static HWND g_workerw_hwnd = NULL;
+
+static BOOL CALLBACK enum_windows_proc(HWND toplevel_hwnd, LPARAM lparam)
+{
+    (void)lparam;
+    HWND p = FindWindowExW(toplevel_hwnd, NULL, L"SHELLDLL_DefView", NULL);
+    if (p != NULL) {
+        /* Gets the WorkerW window immediately behind desktop icons */
+        g_workerw_hwnd = FindWindowExW(NULL, toplevel_hwnd, L"WorkerW", NULL);
+    }
+    return TRUE;
+}
+
+static HWND get_desktop_workerw(void)
+{
+    HWND progman = FindWindowW(L"Progman", NULL);
+    if (!progman) {
+        fprintf(stderr, "[wallpaper] Progman window not found.\n");
+        return NULL;
+    }
+
+    DWORD_PTR result = 0;
+    /* Send message 0x052C to Progman to spawn the WorkerW desktop background layer */
+    SendMessageTimeoutW(progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, &result);
+
+    g_workerw_hwnd = NULL;
+    EnumWindows(enum_windows_proc, 0);
+
+    if (!g_workerw_hwnd) {
+        fprintf(stderr, "[wallpaper] WorkerW not found, falling back to Progman.\n");
+        return progman;
+    }
+
+    fprintf(stderr, "[wallpaper] Found Windows WorkerW desktop handle: %p\n", (void *)g_workerw_hwnd);
+    return g_workerw_hwnd;
+}
+#else
 /* ─────────────────────────────────────────────────────────────────────────────
  * Set X11 EWMH desktop-layer hints
  * ──────────────────────────────────────────────────────────────────────────── */
@@ -126,6 +169,7 @@ static void configure_x11_desktop_hints(Display *dpy, Window xwin)
     XFlush(dpy);
     fprintf(stderr, "[wallpaper] X11 desktop hints configured (_NET_WM_WINDOW_TYPE_DESKTOP).\n");
 }
+#endif
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Public API
@@ -161,6 +205,26 @@ WallpaperCtx *wallpaper_create(int *out_w, int *out_h)
         return NULL;
     }
 
+#ifdef _WIN32
+    /* Hook SDL2 window into Windows 11 WorkerW desktop background */
+    {
+        SDL_SysWMinfo wm_info;
+        SDL_VERSION(&wm_info.version);
+        if (SDL_GetWindowWMInfo(ctx->window, &wm_info) &&
+            wm_info.subsystem == SDL_SYSWM_WINDOWS) {
+            HWND hwnd = wm_info.info.win.window;
+            HWND workerw = get_desktop_workerw();
+            if (workerw) {
+                SetParent(hwnd, workerw);
+                SetWindowLongPtr(hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+                SetWindowLongPtr(hwnd, GWL_EXSTYLE, WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
+                SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, ctx->screen_w, ctx->screen_h,
+                             SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                fprintf(stderr, "[wallpaper] Windows 11 desktop parent hook attached.\n");
+            }
+        }
+    }
+#else
     /* Apply EWMH hints BEFORE showing the window */
     {
         SDL_SysWMinfo wm_info;
@@ -171,6 +235,7 @@ WallpaperCtx *wallpaper_create(int *out_w, int *out_h)
                                         wm_info.info.x11.window);
         }
     }
+#endif
 
     /* Hardware-accelerated renderer */
     ctx->renderer = SDL_CreateRenderer(ctx->window, -1,
@@ -261,6 +326,7 @@ bool wallpaper_process_events(WallpaperCtx *ctx)
     return true;
 }
 
+#ifndef _WIN32
 /* ─────────────────────────────────────────────────────────────────────────────
  * Send an EWMH _NET_WM_STATE ClientMessage to the root window.
  *
@@ -291,6 +357,7 @@ static void send_net_wm_state(Display *dpy, Window xwin, int action,
     XSendEvent(dpy, root, False,
                SubstructureNotifyMask | SubstructureRedirectMask, &ev);
 }
+#endif
 
 void wallpaper_show(WallpaperCtx *ctx)
 {
@@ -298,6 +365,18 @@ void wallpaper_show(WallpaperCtx *ctx)
 
     SDL_ShowWindow(ctx->window);
 
+#ifdef _WIN32
+    SDL_SysWMinfo wm_info;
+    SDL_VERSION(&wm_info.version);
+    if (SDL_GetWindowWMInfo(ctx->window, &wm_info) &&
+        wm_info.subsystem == SDL_SYSWM_WINDOWS) {
+        HWND hwnd = wm_info.info.win.window;
+        ShowWindow(hwnd, SW_SHOWNA);
+        SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, ctx->screen_w, ctx->screen_h,
+                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        fprintf(stderr, "[wallpaper] Windows 11 wallpaper surface shown.\n");
+    }
+#else
     SDL_SysWMinfo wm_info;
     SDL_VERSION(&wm_info.version);
     if (!SDL_GetWindowWMInfo(ctx->window, &wm_info) ||
@@ -357,6 +436,7 @@ void wallpaper_show(WallpaperCtx *ctx)
 
     XFlush(dpy);
     fprintf(stderr, "[wallpaper] window shown in desktop layer (sticky, below taskbar).\n");
+#endif
 }
 
 void wallpaper_hide(WallpaperCtx *ctx)

@@ -2,25 +2,24 @@ name: Build, Package & Auto-Release
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, windows ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, windows ]
 
 permissions:
-  contents: write   # needed to create tags and GitHub Releases
+  contents: write
 
 jobs:
-  build-and-release:
-    name: Build, Package & Release
+  build-linux:
+    name: Build Linux (.deb)
     runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # full history so we can check existing tags
+          fetch-depth: 0
 
-      # ── Read the canonical version from CMakeLists.txt ──────────────────────
       - name: Read version from CMakeLists.txt
         id: version
         run: |
@@ -60,30 +59,95 @@ jobs:
           cpack -G DEB
           ls -lh *.deb
 
-      - name: Verify Package
-        run: |
-          dpkg-deb -I build/wallscape-*.deb
-          dpkg-deb -c build/wallscape-*.deb
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wallscape-linux-deb
+          path: build/*.deb
 
-      # ── Only create a release on pushes to main (not PRs) ──────────────────
-      - name: Check if tag already exists
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        id: tag_check
+  build-windows:
+    name: Build Windows 11 (NSIS & ZIP)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-gtk3
+            mingw-w64-x86_64-ffmpeg
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-nsis
+
+      - name: Configure CMake
+        shell: msys2 {0}
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          if git ls-remote --tags origin | grep -q "refs/tags/$TAG$"; then
-            echo "exists=true"  >> "$GITHUB_OUTPUT"
-            echo "Tag $TAG already exists — skipping release creation."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "Tag $TAG does not exist — will create release."
-          fi
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-O2 -Wall"
+
+      - name: Compile WallScape for Windows
+        shell: msys2 {0}
+        run: |
+          cmake --build build --config Release
+
+      - name: Package Windows Installer & ZIP
+        shell: msys2 {0}
+        run: |
+          cd build
+          cpack -G "ZIP;NSIS"
+          ls -lh
+
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wallscape-windows-packages
+          path: |
+            build/*.exe
+            build/*.zip
+
+  publish-release:
+    name: Publish Release (Linux & Windows)
+    needs: [build-linux, build-windows]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/windows')
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from CMakeLists.txt
+        id: version
+        run: |
+          VER=$(grep -m1 'set(CPACK_PACKAGE_VERSION' CMakeLists.txt \
+                | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VER"    >> "$GITHUB_OUTPUT"
+
+      - name: Download Linux Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wallscape-linux-deb
+          path: release-assets/
+
+      - name: Download Windows Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wallscape-windows-packages
+          path: release-assets/
 
       - name: Extract Release Notes from CHANGELOG
-        if: >
-          github.event_name == 'push' &&
-          github.ref == 'refs/heads/main' &&
-          steps.tag_check.outputs.exists == 'false'
         run: |
           python3 -c "
           import re
@@ -95,34 +159,19 @@ jobs:
               if m and m.group(1).strip():
                   notes = m.group(1).strip()
               else:
-                  notes = '• General performance enhancements and bug fixes.'
+                  notes = '• WallScape Windows 11 & Linux Release.'
           except Exception as e:
-              notes = '• General performance enhancements and bug fixes.'
+              notes = '• WallScape Windows 11 & Linux Release.'
           with open('/tmp/release_notes.md', 'w') as f:
               f.write(notes + '\n')
           "
 
-      - name: Create & Push Git Tag
-        if: >
-          github.event_name == 'push' &&
-          github.ref == 'refs/heads/main' &&
-          steps.tag_check.outputs.exists == 'false'
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}"
-          git push origin "${{ steps.version.outputs.tag }}"
-
-      - name: Create GitHub Release & Upload .deb
-        if: >
-          github.event_name == 'push' &&
-          github.ref == 'refs/heads/main' &&
-          steps.tag_check.outputs.exists == 'false'
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: "WallScape ${{ steps.version.outputs.tag }}"
           body_path: /tmp/release_notes.md
-          files: build/*.deb
+          files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

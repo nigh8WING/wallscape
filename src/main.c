@@ -20,7 +20,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <io.h>
+#define access _access
+#define R_OK 4
+#else
 #include <unistd.h>
+#endif
 
 #include <gtk/gtk.h>
 #include <SDL2/SDL.h>
@@ -52,21 +61,37 @@ static void signal_handler(int sig)
     }
 }
 
+#ifdef _WIN32
+static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type)
+{
+    (void)ctrl_type;
+    signal_handler(0);
+    return TRUE;
+}
+#endif
+
 static void setup_signals(void)
 {
+#ifdef _WIN32
+    SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+#else
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
+#endif
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Display Server Setup (Wayland & X11 compatibility)
+ * Display Server Setup (Wayland & X11 compatibility on Linux)
  * ──────────────────────────────────────────────────────────────────────────── */
 static void setup_display_environment(void)
 {
+#ifndef _WIN32
     const char *wayland_display = getenv("WAYLAND_DISPLAY");
     const char *session_type = getenv("XDG_SESSION_TYPE");
 
@@ -82,6 +107,7 @@ static void setup_display_environment(void)
     } else {
         fprintf(stderr, "[main] Native X11 session detected.\n");
     }
+#endif
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
